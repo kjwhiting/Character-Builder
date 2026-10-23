@@ -8,8 +8,8 @@ import sqlite3
 
 import pytest
 
-from database import seeds
-from database.connection import (
+from src.database import seeds
+from src.database.connection import (
     DEFAULT_PROFILE_NAME,
     LAST_PROFILE_FILE_NAME,
     LEGACY_PROFILE_NAME,

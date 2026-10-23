@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional, Union
 
-from database import seeds
+from src.database import seeds
 
 PathLike = Union[str, Path]
 

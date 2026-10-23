@@ -5,8 +5,8 @@ These tests double as documentation of what a valid template looks like.
 
 import pytest
 
-from database import seeds
-from database.connection import profile_noun
+from src.database import seeds
+from src.database.connection import profile_noun
 
 ALL_TEMPLATES = list(seeds.TEMPLATES.values())
 
