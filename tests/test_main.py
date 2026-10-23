@@ -86,10 +86,10 @@ def test_second_launch_reopens_the_remembered_profile(started, tmp_path):
     assert not (tmp_path / "Character.sqlite").exists()
 
 
-def test_create_app_uses_the_light_appearance(started):
+def test_create_app_uses_the_dark_appearance(started):
     started()
 
-    assert ctk.get_appearance_mode() == "Light"
+    assert ctk.get_appearance_mode() == "Dark"
 
 
 def test_unreadable_profile_raises_before_any_window_exists(tmp_path):

@@ -2,39 +2,29 @@ import tkinter as tk
 
 import customtkinter as ctk
 
+BACKGROUND = "#151918"
+SIDEBAR_BG = "#1F302A"
+SURFACE = "#363E40"
+INPUT_BG = "#222828"
 
-BACKGROUND = "#151918"      
-SIDEBAR_BG = "#1F302A"      
-SURFACE = "#363E40"        
-INPUT_BG = "#222828"        
+BORDER = "#4E5455"
+INPUT_BORDER = "#979A9A"
 
-# Lines
-BORDER = "#4E5455"          
-INPUT_BORDER = "#979A9A"    
+TEXT = "#EDEEEE"
+TEXT_MUTED = "#C4C5C5"
+TEXT_ON_ACCENT = "#0A0C0C"
 
-# Type
-TEXT = "#EDEEEE"            
-TEXT_MUTED = "#C4C5C5"      
-TEXT_ON_ACCENT = "#0A0C0C"  
+ACCENT = "#A77646"
+ACCENT_HOVER = "#B38960"
+GOLD = "#C8AA8C"
 
-# Accents
-ACCENT = "#A77646"          
-ACCENT_HOVER = "#B38960"    
-GOLD = "#C8AA8C"            
-
-# States
-SELECTION_BG = "#3B5C4C"   
+SELECTION_BG = "#3B5C4C"
 HOVER_BG = "#2D423B"
-DRAG_BG = "#645E46" 
-DANGER = "#F5A898"  
-FOCUS_RING = TEXT   
+DRAG_BG = "#645E46"
+DANGER = "#F5A898"
+FOCUS_RING = TEXT
 
-# Typography: Georgia is the guaranteed fallback; the first installed family wins.
 FONT_FAMILY = "Georgia"
-FONT_DISPLAY_CANDIDATES = ("Cinzel", "Marcellus", "Trajan Pro", "Palatino Linotype",
-                           "Book Antiqua", "Palatino", FONT_FAMILY)
-FONT_BODY_CANDIDATES = ("Palatino Linotype", "Book Antiqua", "Palatino", FONT_FAMILY)
-
 
 FONT_STYLES = {
     "title": {"size": 28, "weight": "bold", "slant": "roman"},
@@ -88,7 +78,7 @@ COMBO_STYLE = {
     "border_color": INPUT_BORDER,
     "border_width": 1,
     "corner_radius": 4,
-    "button_color": GOLD,
+    "button_color": BORDER,
     "button_hover_color": ACCENT,
     "dropdown_fg_color": INPUT_BG,
     "dropdown_text_color": TEXT,
@@ -102,6 +92,8 @@ TEXTBOX_STYLE = {
     "border_width": 1,
     "corner_radius": 4,
     "wrap": "word",
+    "scrollbar_button_color": INPUT_BORDER,
+    "scrollbar_button_hover_color": GOLD,
 }
 
 CARD_STYLE = {
@@ -186,7 +178,7 @@ def styled_textbox(parent, height=110, **kwargs):
 def scrollable(parent, fg_color=SURFACE, **kwargs):
     return ctk.CTkScrollableFrame(
         parent, fg_color=fg_color, corner_radius=0, scrollbar_fg_color=fg_color,
-        scrollbar_button_color=BORDER, scrollbar_button_hover_color=GOLD, **kwargs,
+        scrollbar_button_color=INPUT_BORDER, scrollbar_button_hover_color=GOLD, **kwargs,
     )
 
 
@@ -194,11 +186,11 @@ def ornament(parent, color=GOLD):
     frame = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=0, height=16)
     frame.grid_columnconfigure(0, weight=1)
     frame.grid_columnconfigure(2, weight=1)
-    ctk.CTkFrame(frame, height=1, fg_color=color, corner_radius=0).grid(
+    tk.Frame(frame, height=1, bd=0, highlightthickness=0, bg=color).grid(
         row=0, column=0, sticky="ew")
     ctk.CTkLabel(frame, text="\u25C6", font=font("small"), text_color=color).grid(
         row=0, column=1, padx=12)
-    ctk.CTkFrame(frame, height=1, fg_color=color, corner_radius=0).grid(
+    tk.Frame(frame, height=1, bd=0, highlightthickness=0, bg=color).grid(
         row=0, column=2, sticky="ew")
     return frame
 
@@ -209,7 +201,7 @@ def section_header(parent, text):
     ctk.CTkLabel(frame, text="\u25C6", font=font("small"), text_color=GOLD).grid(
         row=0, column=0, padx=(0, 10))
     ctk.CTkLabel(frame, text=text.upper(), font=font("subheading"),
-                 text_color=ACCENT).grid(row=0, column=1)
-    ctk.CTkFrame(frame, height=1, fg_color=GOLD, corner_radius=0).grid(
+                 text_color=GOLD).grid(row=0, column=1)
+    tk.Frame(frame, height=1, bd=0, highlightthickness=0, bg=GOLD).grid(
         row=0, column=2, sticky="ew", padx=(14, 0))
     return frame

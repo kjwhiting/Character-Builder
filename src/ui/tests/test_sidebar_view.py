@@ -205,3 +205,29 @@ def test_selection_highlight_survives_a_refresh(sidebar, entities, catalog):
     sidebar.refresh()
 
     assert sidebar.entity_buttons[target.id].cget("fg_color") == theme.SELECTION_BG
+
+
+def test_selected_entry_is_also_marked_by_a_bolder_font(sidebar, entities, catalog):
+    populate(entities, catalog)
+    sidebar.refresh()
+    first, second, _third = sidebar.visible_entities()
+
+    sidebar.set_selected(second.id)
+
+    assert sidebar.entity_buttons[second.id].cget("font").cget("weight") == "bold"
+    assert sidebar.entity_buttons[first.id].cget("font").cget("weight") == "normal"
+
+
+def test_search_box_shows_a_placeholder_hint(sidebar):
+    assert sidebar.search_entry.cget("placeholder_text") == "Search..."
+
+
+def test_typing_in_the_search_box_filters_the_list(sidebar, entities, catalog):
+    populate(entities, catalog)
+    sidebar.refresh()
+
+    sidebar.search_entry.insert(0, "bram")
+    sidebar.search_entry._entry.event_generate("<KeyRelease>")
+    sidebar.update()
+
+    assert names(sidebar) == ["Bram"]

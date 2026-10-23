@@ -30,7 +30,7 @@ def show_startup_error(message: str) -> None:
 
 
 def create_app(base_dir: Path) -> AppWindow:
-    ctk.set_appearance_mode("light")
+    ctk.set_appearance_mode("dark")
     database = DatabaseConnection()
     path = resolve_startup_profile(base_dir)
     database.open(path, create=True, template=template_for_path(path))

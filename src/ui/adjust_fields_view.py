@@ -280,7 +280,7 @@ class AdjustFieldsView(ctk.CTkToplevel):
         ctk.CTkLabel(header, text="\u25C6", font=theme.font("small"),
                      text_color=theme.GOLD).grid(row=0, column=0, padx=(8, 8))
         ctk.CTkLabel(header, text=name.upper(), font=theme.font("subheading"),
-                     text_color=theme.ACCENT, anchor="w").grid(row=0, column=1, sticky="w")
+                     text_color=theme.GOLD, anchor="w").grid(row=0, column=1, sticky="w")
         ctk.CTkLabel(header, text=f"{count} field{'s' if count != 1 else ''}",
                      font=theme.font("note"), text_color=theme.TEXT_MUTED,
                      anchor="w").grid(row=0, column=2, sticky="w", padx=14)
@@ -295,13 +295,13 @@ class AdjustFieldsView(ctk.CTkToplevel):
         theme.secondary_button(controls, "Delete Category",
                                lambda c=name: self.delete_category(c),
                                width=150, height=32, danger=True).pack(side="left", padx=2)
-        ctk.CTkFrame(header, height=1, fg_color=theme.GOLD, corner_radius=0).grid(
+        tk.Frame(header, height=1, bd=0, highlightthickness=0, bg=theme.GOLD).grid(
             row=1, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         return header
 
     def _build_row(self, field: Field):
         frame = ctk.CTkFrame(self._list, fg_color=theme.BACKGROUND, border_width=1,
-                             border_color=theme.BORDER, corner_radius=4)
+                             border_color=theme.BORDER, corner_radius=0)
         frame.pack(fill="x", pady=3)
         frame.grid_columnconfigure(1, weight=1)
 
@@ -356,7 +356,7 @@ class AdjustFieldsView(ctk.CTkToplevel):
         return blocks
 
     def _drag_start(self, _event, field, frame, handle):
-        line = tk.Frame(self._list, bg=theme.ACCENT, height=4)
+        line = tk.Frame(self._list, bg=theme.GOLD, height=4)
         self._drag = {"field": field, "target": None, "line": line}
         try:
             frame.configure(fg_color=theme.DRAG_BG)

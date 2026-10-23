@@ -42,12 +42,11 @@ class SidebarView(ctk.CTkFrame):
         self._profile_label.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 10))
         theme.ornament(self).grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 16))
 
-        self._search_var = tk.StringVar(master=self)
-        self._search_var.trace_add("write", lambda *_args: self._render_list())
-        self.search_entry = theme.styled_entry(
-            self, height=40, textvariable=self._search_var, placeholder_text="Search...")
+        self.search_entry = theme.styled_entry(self, height=40, placeholder_text="Search...")
         self.search_entry.grid(row=3, column=0, sticky="ew", padx=20, pady=(0, 10))
         self.search_entry.bind("<Return>", lambda _event: self.open_first_match())
+        for sequence in ("<KeyRelease>", "<<Paste>>", "<<Cut>>"):
+            self.search_entry.bind(sequence, lambda _event: self.after_idle(self._render_list))
 
         self.filter_combo = theme.styled_combo(
             self, [ALL_ENTRIES_LABEL], height=36, command=self.select_filter)
@@ -80,7 +79,9 @@ class SidebarView(ctk.CTkFrame):
         self._profile_label.configure(text=profile_name)
 
     def set_search_text(self, text: str) -> None:
-        self._search_var.set(text)
+        self.search_entry.delete(0, "end")
+        self.search_entry.insert(0, text)
+        self._render_list()
 
     def select_filter(self, label: str) -> None:
         if label not in self._filters:
@@ -98,7 +99,7 @@ class SidebarView(ctk.CTkFrame):
         self._render_list()
 
     def visible_entities(self) -> list[Entity]:
-        found = self._entities.search_entities(self._search_var.get())
+        found = self._entities.search_entities(self.search_entry.get())
         missing_field_id = self._filters.get(self._filter_label)
         if missing_field_id is None:
             return found
@@ -127,7 +128,7 @@ class SidebarView(ctk.CTkFrame):
 
         entities = self.visible_entities()
         if not entities:
-            filtering = bool(self._search_var.get().strip()) or self._filter_label != ALL_ENTRIES_LABEL
+            filtering = bool(self.search_entry.get().strip()) or self._filter_label != ALL_ENTRIES_LABEL
             ctk.CTkLabel(
                 self._list_frame, text="No matches." if filtering else "Nothing here yet.",
                 font=theme.font("note"), text_color=theme.TEXT_MUTED,
@@ -151,8 +152,10 @@ class SidebarView(ctk.CTkFrame):
         for entity_id, button in self._buttons.items():
             try:
                 if entity_id == self._selected_id:
-                    button.configure(fg_color=theme.SELECTION_BG, hover_color=theme.SELECTION_BG)
+                    button.configure(fg_color=theme.SELECTION_BG, hover_color=theme.SELECTION_BG,
+                                     font=theme.font("label"))
                 else:
-                    button.configure(fg_color="transparent", hover_color=theme.HOVER_BG)
+                    button.configure(fg_color="transparent", hover_color=theme.HOVER_BG,
+                                     font=theme.font("body"))
             except tk.TclError:
                 pass
