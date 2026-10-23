@@ -2,26 +2,39 @@ import tkinter as tk
 
 import customtkinter as ctk
 
-BACKGROUND = "#F4F1EA"
-TEXT = "#2C2623"
-ACCENT = "#B34A32"
-GOLD = "#C28E38"
 
-SURFACE = "#FBF9F4"
-SIDEBAR_BG = "#EBE5D8"
-BORDER = "#D9D0BD"
-INPUT_BG = "#FFFFFF"
-INPUT_BORDER = "#9C9078"
-TEXT_MUTED = "#6A5E56"
-TEXT_ON_ACCENT = BACKGROUND
-ACCENT_HOVER = "#963B27"
-SELECTION_BG = "#E8D7B0"
-HOVER_BG = "#EFE9DC"
-DRAG_BG = "#F0DFB8"
-DANGER = "#8C2B18"
-FOCUS_RING = TEXT
+BACKGROUND = "#151918"      
+SIDEBAR_BG = "#1F302A"      
+SURFACE = "#363E40"        
+INPUT_BG = "#222828"        
 
+# Lines
+BORDER = "#4E5455"          
+INPUT_BORDER = "#979A9A"    
+
+# Type
+TEXT = "#EDEEEE"            
+TEXT_MUTED = "#C4C5C5"      
+TEXT_ON_ACCENT = "#0A0C0C"  
+
+# Accents
+ACCENT = "#A77646"          
+ACCENT_HOVER = "#B38960"    
+GOLD = "#C8AA8C"            
+
+# States
+SELECTION_BG = "#3B5C4C"   
+HOVER_BG = "#2D423B"
+DRAG_BG = "#645E46" 
+DANGER = "#F5A898"  
+FOCUS_RING = TEXT   
+
+# Typography: Georgia is the guaranteed fallback; the first installed family wins.
 FONT_FAMILY = "Georgia"
+FONT_DISPLAY_CANDIDATES = ("Cinzel", "Marcellus", "Trajan Pro", "Palatino Linotype",
+                           "Book Antiqua", "Palatino", FONT_FAMILY)
+FONT_BODY_CANDIDATES = ("Palatino Linotype", "Book Antiqua", "Palatino", FONT_FAMILY)
+
 
 FONT_STYLES = {
     "title": {"size": 28, "weight": "bold", "slant": "roman"},
