@@ -1,12 +1,19 @@
 import tkinter as tk
 
+import customtkinter as ctk
 import pytest
 
 from src.database import seeds
 from src.database.connection import DatabaseConnection
-from src.ui import adjust_fields_view, app_window, card_view
+from src.ui import adjust_fields_view, app_window, card_view, theme
 from src.ui.adjust_fields_view import AdjustFieldsView
-from src.ui.app_window import AppWindow, template_for_path
+from src.ui.app_window import (
+    THEME_FILE_NAME,
+    AppWindow,
+    recall_theme,
+    remember_theme,
+    template_for_path,
+)
 from src.ui.tests.helpers import label_texts
 
 
@@ -433,3 +440,124 @@ def test_shutdown_is_safe_to_repeat(app):
     app.shutdown()
 
     assert not app.database.is_open
+
+
+def test_view_menu_offers_both_themes_with_the_current_one_selected(app):
+    assert app.view_menu_labels == ["Dark Theme", "Light Theme"]
+    assert app._theme_var.get() == "dark"
+
+
+def test_light_theme_menu_item_recolors_the_whole_window(app):
+    app.invoke_menu("Light Theme")
+    light = theme.PALETTES["light"]
+
+    assert theme.current_palette() == "light"
+    assert ctk.get_appearance_mode() == "Light"
+    assert app.cget("fg_color") == light["BACKGROUND"]
+    assert app.sidebar.cget("fg_color") == light["SIDEBAR_BG"]
+    assert app.sidebar.add_button.cget("fg_color") == light["ACCENT"]
+    assert app.sidebar.add_button.cget("text_color") == light["TEXT_ON_ACCENT"]
+    assert app.card.cget("fg_color") == light["BACKGROUND"]
+    assert app._theme_var.get() == "light"
+    assert str(app.file_menu.cget("bg")) == light["SURFACE"]
+    assert str(app.file_menu.cget("fg")) == light["TEXT"]
+
+
+def test_switching_back_restores_the_dark_theme(app):
+    app.invoke_menu("Light Theme")
+
+    app.invoke_menu("Dark Theme")
+
+    assert theme.current_palette() == "dark"
+    assert app.cget("fg_color") == theme.PALETTES["dark"]["BACKGROUND"]
+    assert app.sidebar.cget("fg_color") == theme.PALETTES["dark"]["SIDEBAR_BG"]
+
+
+def test_switching_theme_keeps_data_selection_and_card(app):
+    first = add_entity(app, "Aria")
+    add_entity(app, "Bram")
+    app.sidebar.refresh()
+    app.select_entity(first)
+
+    app.invoke_menu("Light Theme")
+
+    assert entity_names(app) == ["Aria", "Bram"]
+    assert app.card.entity_id == first
+    assert app.sidebar.selected_id == first
+    assert "Aria" in label_texts(app.card)
+    assert app.database.is_open
+
+
+def test_services_keep_working_after_a_theme_switch(app):
+    app.invoke_menu("Light Theme")
+
+    app.sidebar.add_button.invoke()
+    app.card.name_entry.insert(0, "Aria")
+    app.card.save()
+
+    assert entity_names(app) == ["Aria"]
+
+
+def test_selecting_the_current_theme_keeps_the_existing_views(app):
+    sidebar = app.sidebar
+
+    app.invoke_menu("Dark Theme")
+
+    assert app.sidebar is sidebar
+
+
+def test_switching_theme_while_editing_can_be_declined(app, dialogs):
+    app.add_entity()
+    sidebar = app.sidebar
+    dialogs.answer = False
+
+    app.invoke_menu("Light Theme")
+
+    assert theme.current_palette() == "dark"
+    assert app._theme_var.get() == "dark"
+    assert app.sidebar is sidebar
+    assert app.card.editing
+
+
+def test_switching_theme_closes_the_adjust_window(app):
+    app.invoke_menu("Adjust Fields...")
+
+    app.invoke_menu("Light Theme")
+
+    assert app.adjust_window is None
+
+
+def test_adjust_fields_opened_after_a_switch_uses_the_new_colors(app):
+    app.invoke_menu("Light Theme")
+
+    app.invoke_menu("Adjust Fields...")
+
+    assert app.adjust_window.cget("fg_color") == theme.PALETTES["light"]["BACKGROUND"]
+
+
+def test_theme_choice_is_remembered_next_to_the_settings_file(app, workspace):
+    app.invoke_menu("Light Theme")
+
+    assert (workspace / THEME_FILE_NAME).read_text() == "light"
+    assert recall_theme(workspace / THEME_FILE_NAME) == "light"
+
+
+def test_set_theme_rejects_unknown_names(app):
+    with pytest.raises(KeyError):
+        app.set_theme("neon")
+
+    assert theme.current_palette() == "dark"
+
+
+def test_recall_theme_ignores_missing_empty_and_unknown_files(tmp_path):
+    assert recall_theme(tmp_path / "missing.txt") is None
+    (tmp_path / "empty.txt").write_text("")
+    (tmp_path / "junk.txt").write_text("neon")
+
+    assert recall_theme(tmp_path / "empty.txt") is None
+    assert recall_theme(tmp_path / "junk.txt") is None
+
+
+def test_remember_theme_reports_failure_for_unwritable_locations(tmp_path):
+    assert remember_theme(tmp_path / "no_such_folder" / "theme.txt", "light") is False
+    assert remember_theme(tmp_path / "theme.txt", "light") is True

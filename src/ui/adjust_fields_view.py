@@ -280,7 +280,7 @@ class AdjustFieldsView(ctk.CTkToplevel):
         ctk.CTkLabel(header, text="\u25C6", font=theme.font("small"),
                      text_color=theme.GOLD).grid(row=0, column=0, padx=(8, 8))
         ctk.CTkLabel(header, text=name.upper(), font=theme.font("subheading"),
-                     text_color=theme.GOLD, anchor="w").grid(row=0, column=1, sticky="w")
+                     text_color=theme.EMPHASIS, anchor="w").grid(row=0, column=1, sticky="w")
         ctk.CTkLabel(header, text=f"{count} field{'s' if count != 1 else ''}",
                      font=theme.font("note"), text_color=theme.TEXT_MUTED,
                      anchor="w").grid(row=0, column=2, sticky="w", padx=14)
@@ -356,7 +356,7 @@ class AdjustFieldsView(ctk.CTkToplevel):
         return blocks
 
     def _drag_start(self, _event, field, frame, handle):
-        line = tk.Frame(self._list, bg=theme.GOLD, height=4)
+        line = tk.Frame(self._list, bg=theme.EMPHASIS, height=4)
         self._drag = {"field": field, "target": None, "line": line}
         try:
             frame.configure(fg_color=theme.DRAG_BG)

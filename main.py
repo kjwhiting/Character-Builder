@@ -3,15 +3,14 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
-import customtkinter as ctk
-
 from src.database.connection import (
     LAST_PROFILE_FILE_NAME,
     DatabaseConnection,
     ProfileError,
     resolve_startup_profile,
 )
-from src.ui.app_window import AppWindow, template_for_path
+from src.ui import theme
+from src.ui.app_window import THEME_FILE_NAME, AppWindow, recall_theme, template_for_path
 
 
 def application_dir() -> Path:
@@ -30,7 +29,7 @@ def show_startup_error(message: str) -> None:
 
 
 def create_app(base_dir: Path) -> AppWindow:
-    ctk.set_appearance_mode("dark")
+    theme.apply_palette(recall_theme(base_dir / THEME_FILE_NAME) or theme.DEFAULT_PALETTE)
     database = DatabaseConnection()
     path = resolve_startup_profile(base_dir)
     database.open(path, create=True, template=template_for_path(path))

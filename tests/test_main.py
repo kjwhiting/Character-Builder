@@ -11,7 +11,8 @@ from src.database.connection import (
     DatabaseConnection,
     remember_profile,
 )
-from src.ui.app_window import AppWindow
+from src.ui import theme
+from src.ui.app_window import THEME_FILE_NAME, AppWindow
 
 pytestmark = pytest.mark.usefixtures("require_display")
 
@@ -130,3 +131,33 @@ def test_main_reports_startup_failures_and_returns_an_error_code(monkeypatch, tm
     assert main.main() == 1
 
     assert len(shown) == 1 and shown[0]
+
+
+def test_remembered_light_theme_is_applied_at_launch(started, tmp_path):
+    (tmp_path / THEME_FILE_NAME).write_text("light")
+
+    window = started()
+
+    assert theme.current_palette() == "light"
+    assert ctk.get_appearance_mode() == "Light"
+    assert window.cget("fg_color") == theme.PALETTES["light"]["BACKGROUND"]
+
+
+def test_unrecognised_saved_theme_falls_back_to_dark(started, tmp_path):
+    (tmp_path / THEME_FILE_NAME).write_text("neon")
+
+    started()
+
+    assert theme.current_palette() == "dark"
+
+
+def test_choosing_light_in_the_menu_persists_to_the_next_launch(started, tmp_path):
+    first = started()
+    first.invoke_menu("Light Theme")
+    first.shutdown()
+    first.destroy()
+
+    second = started()
+
+    assert theme.current_palette() == "light"
+    assert second._theme_var.get() == "light"

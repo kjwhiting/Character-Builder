@@ -26,6 +26,8 @@ from src.ui.card_view import CardView
 from src.ui.sidebar_view import SidebarView
 
 APP_TITLE = "Character Builder"
+THEME_FILE_NAME = "theme.txt"
+THEME_LABELS = {"dark": "Dark Theme", "light": "Light Theme"}
 PROFILE_FILETYPES = [("SQLite profiles", "*.sqlite *.sqlite3 *.db"), ("All files", "*.*")]
 
 
@@ -37,12 +39,30 @@ def template_for_path(path) -> Template | None:
     return None
 
 
+def recall_theme(theme_file) -> str | None:
+    try:
+        name = Path(theme_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return name if name in theme.PALETTES else None
+
+
+def remember_theme(theme_file, name: str) -> bool:
+    try:
+        Path(theme_file).write_text(name, encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 class AppWindow(ctk.CTk):
     def __init__(self, database: DatabaseConnection, settings_file: Path | None = None,
                  project_service: ProjectService | None = None):
         super().__init__()
         self._db = database
         self._settings_file = Path(settings_file) if settings_file else None
+        self._theme_file = (self._settings_file.with_name(THEME_FILE_NAME)
+                            if self._settings_file else None)
         self._projects = project_service or ProjectService(make_initializer())
         self._adjust_window: AdjustFieldsView | None = None
         self._entities: EntityService | None = None
@@ -79,21 +99,42 @@ class AppWindow(ctk.CTk):
 
     @property
     def menu_labels(self) -> list[str]:
-        last = self.file_menu.index("end")
-        labels = []
-        for position in range(last + 1):
-            if self.file_menu.type(position) == "command":
-                labels.append(self.file_menu.entrycget(position, "label"))
-        return labels
+        return self._entry_labels(self.file_menu)
+
+    @property
+    def view_menu_labels(self) -> list[str]:
+        return self._entry_labels(self.view_menu)
 
     def invoke_menu(self, label: str) -> None:
-        last = self.file_menu.index("end")
-        for position in range(last + 1):
-            if (self.file_menu.type(position) == "command"
-                    and self.file_menu.entrycget(position, "label") == label):
-                self.file_menu.invoke(position)
-                return
+        for menu in (self.file_menu, self.view_menu):
+            for position in range(menu.index("end") + 1):
+                if (menu.type(position) in ("command", "radiobutton")
+                        and menu.entrycget(position, "label") == label):
+                    menu.invoke(position)
+                    return
         raise KeyError(label)
+
+    def set_theme(self, name: str) -> None:
+        if name not in theme.PALETTES:
+            raise KeyError(name)
+        if name == theme.current_palette():
+            self._theme_var.set(name)
+            return
+        if not self._confirm_discard():
+            self._theme_var.set(theme.current_palette())
+            return
+        selected = self.card.entity_id
+        self._close_adjust_window()
+        theme.apply_palette(name)
+        self._theme_var.set(name)
+        self.configure(fg_color=theme.BACKGROUND)
+        self._style_menus()
+        self._build_views()
+        if selected is not None:
+            self.card.show_entity(selected)
+            self.sidebar.set_selected(self.card.entity_id)
+        if self._theme_file is not None:
+            remember_theme(self._theme_file, name)
 
     def new_project(self) -> None:
         if not self._confirm_discard():
@@ -172,20 +213,42 @@ class AppWindow(ctk.CTk):
         self._db.close()
 
     def _build_menu(self) -> None:
-        menubar = tk.Menu(self)
-        menu_style = {
-            "tearoff": False, "bg": theme.SURFACE, "fg": theme.TEXT,
-            "activebackground": theme.SELECTION_BG, "activeforeground": theme.TEXT,
-            "font": (theme.FONT_FAMILY, 12),
-        }
-        self.file_menu = tk.Menu(menubar, **menu_style)
+        self._menubar = tk.Menu(self)
+        self.file_menu = tk.Menu(self._menubar)
         self.file_menu.add_command(label="New Project...", command=self.new_project)
         self.file_menu.add_command(label="Load Profile...", command=self.load_profile)
         self.file_menu.add_command(label="Adjust Fields...", command=self.adjust_fields)
         self.file_menu.add_separator()
         self.file_menu.add_command(label="Exit", command=self.exit_app)
-        menubar.add_cascade(label="File", menu=self.file_menu)
-        self.configure(menu=menubar)
+        self._menubar.add_cascade(label="File", menu=self.file_menu)
+
+        self._theme_var = tk.StringVar(master=self, value=theme.current_palette())
+        self.view_menu = tk.Menu(self._menubar)
+        for name, label in THEME_LABELS.items():
+            self.view_menu.add_radiobutton(
+                label=label, value=name, variable=self._theme_var,
+                command=lambda: self.set_theme(self._theme_var.get()))
+        self._menubar.add_cascade(label="View", menu=self.view_menu)
+
+        self._style_menus()
+        self.configure(menu=self._menubar)
+
+    def _style_menus(self) -> None:
+        style = {
+            "bg": theme.SURFACE, "fg": theme.TEXT,
+            "activebackground": theme.SELECTION_BG, "activeforeground": theme.TEXT,
+            "font": (theme.FONT_FAMILY, 12),
+        }
+        self._menubar.configure(**style)
+        for menu in (self.file_menu, self.view_menu):
+            menu.configure(tearoff=False, **style)
+        self.view_menu.configure(selectcolor=theme.TEXT)
+
+    @staticmethod
+    def _entry_labels(menu) -> list[str]:
+        return [menu.entrycget(position, "label")
+                for position in range(menu.index("end") + 1)
+                if menu.type(position) in ("command", "radiobutton")]
 
     def _build_views(self) -> None:
         for view in (self.sidebar, self.card):

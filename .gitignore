@@ -5,6 +5,7 @@ __pycache__/
 build/
 dist/
 
+
 # ---- Virtual environments ----
 .venv/
 venv/
@@ -34,3 +35,5 @@ images/
 *.swp
 .DS_Store
 Thumbs.db
+
+theme.txt
