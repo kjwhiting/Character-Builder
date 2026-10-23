@@ -7,13 +7,13 @@ from typing import Callable
 import customtkinter as ctk
 from PIL import Image
 
+from src.database.seeds import ENTITY_TYPES
 from src.services.category_service import CategoryService
 from src.services.entity_service import EntityService
 from src.services.errors import EntityNotFoundError, NothingToExportError, ServiceError
 from src.services.export_service import ExportService
 from src.ui import theme
 
-BUILTIN_TYPES = ("Character", "Place")
 IMAGE_FILETYPES = [("Images", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"), ("All files", "*.*")]
 
 
@@ -350,7 +350,7 @@ class CardView(ctk.CTkFrame):
         row += 1
 
         row = self._form_label(body, row, "Type", top=12)
-        type_options = list(BUILTIN_TYPES)
+        type_options = list(ENTITY_TYPES)
         for extra in (self._noun, preset["type"]):
             if extra and extra not in type_options:
                 type_options.append(extra)

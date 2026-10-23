@@ -183,3 +183,19 @@ def test_make_initializer_releases_the_database_file(tmp_path):
     path.unlink()
 
     assert not path.exists()
+
+
+def test_default_profiles_come_from_the_seed_templates():
+    assert [(p.label, p.filename) for p in DEFAULT_PROFILES] == [
+        ("Characters", "Characters.sqlite"),
+        ("Worldbuilding", "Worldbuilding.sqlite"),
+    ]
+
+
+def test_default_initializer_seeds_every_default_profile_from_its_template(tmp_path):
+    project = ProjectService(make_initializer()).create_project(tmp_path, "Saga")
+
+    categories, _fields = read_layout(project.databases["Characters"])
+    assert "Relations" in categories
+    categories, fields = read_layout(project.databases["Worldbuilding"])
+    assert "Geography" in categories and "Terrain" in fields

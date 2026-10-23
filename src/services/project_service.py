@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from src.database.connection import DatabaseConnection
-from src.database.seeds import Template
+from src.database.seeds import TEMPLATES, Template
 from src.services.errors import InvalidNameError, ProjectCreationError, ProjectExistsError
 
 IMAGES_DIRNAME = "images"
@@ -18,15 +18,19 @@ class ProfileSpec:
     filename: str
 
 
-DEFAULT_PROFILES = (
-    ProfileSpec("Characters", "Characters.sqlite"),
-    ProfileSpec("Worldbuilding", "Worldbuilding.sqlite"),
+DEFAULT_PROFILES = tuple(
+    ProfileSpec(template["label"], template["profile_filename"])
+    for template in TEMPLATES.values()
 )
+
+DEFAULT_TEMPLATES: Mapping[str, Template] = {
+    template["label"]: template for template in TEMPLATES.values()
+}
 
 DatabaseInitializer = Callable[[Path, ProfileSpec], None]
 
 
-def make_initializer(templates: Mapping[str, Template]) -> DatabaseInitializer:
+def make_initializer(templates: Mapping[str, Template] = DEFAULT_TEMPLATES) -> DatabaseInitializer:
     def initialize(db_path: Path, profile: ProfileSpec) -> None:
         database = DatabaseConnection()
         try:
