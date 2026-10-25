@@ -4,39 +4,25 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from src.database.connection import (
-    DatabaseConnection,
-    ProfileError,
-    profile_noun,
-    remember_profile,
-)
-from src.database.seeds import TEMPLATES, Template, get_template
-from src.services.category_service import CategoryService
-from src.services.entity_service import EntityService
+from src.database.connection import DatabaseError, ProjectDatabase
+from src.services.collection_service import CollectionService
 from src.services.errors import ServiceError
-from src.services.export_service import ExportService, TkClipboard
-from src.services.project_service import (
-    IMAGES_DIRNAME,
-    ProjectService,
-    make_initializer,
-)
+from src.services.export_service import TkClipboard
+from src.services.project_service import Project, ProjectService, remember_project
+from src.services.term_index import TermIndex
+from src.services.trash_service import RETENTION_DAYS, TrashService
 from src.ui import theme
 from src.ui.adjust_fields_view import AdjustFieldsView, ask_name
-from src.ui.card_view import CardView
-from src.ui.sidebar_view import SidebarView
+from src.ui.color_dialog import ask_color
+from src.ui.global_search import GlobalSearch
+from src.ui.new_tab_dialog import ask_new_tab
+from src.ui.tab_bar import TabBar
+from src.ui.tab_page import TabPage
+from src.ui.trash_dialog import TrashDialog
 
-APP_TITLE = "Character Builder"
+APP_TITLE = "Worldbuilder"
 THEME_FILE_NAME = "theme.txt"
 THEME_LABELS = {"dark": "Dark Theme", "light": "Light Theme"}
-PROFILE_FILETYPES = [("SQLite profiles", "*.sqlite *.sqlite3 *.db"), ("All files", "*.*")]
-
-
-def template_for_path(path) -> Template | None:
-    noun = profile_noun(path)
-    for template in TEMPLATES.values():
-        if template["entity_type"] == noun:
-            return get_template(template["key"])
-    return None
 
 
 def recall_theme(theme_file) -> str | None:
@@ -56,36 +42,55 @@ def remember_theme(theme_file, name: str) -> bool:
 
 
 class AppWindow(ctk.CTk):
-    def __init__(self, database: DatabaseConnection, settings_file: Path | None = None,
+    def __init__(self, database: ProjectDatabase, project: Project,
+                 settings_file: Path | None = None,
                  project_service: ProjectService | None = None):
         super().__init__()
         self._db = database
+        self._project = project
         self._settings_file = Path(settings_file) if settings_file else None
         self._theme_file = (self._settings_file.with_name(THEME_FILE_NAME)
                             if self._settings_file else None)
-        self._projects = project_service or ProjectService(make_initializer())
+        self._projects = project_service or ProjectService()
+        self._collections: CollectionService | None = None
+        self._pages: dict[int, TabPage] = {}
+        self._active_id: int | None = None
         self._adjust_window: AdjustFieldsView | None = None
-        self._entities: EntityService | None = None
-        self._categories: CategoryService | None = None
-        self._exporter: ExportService | None = None
-        self.sidebar: SidebarView | None = None
-        self.card: CardView | None = None
+        self._adjust_for: int | None = None
+        self.terms: TermIndex | None = None
+        self.global_search: GlobalSearch | None = None
+        self.tab_bar: TabBar | None = None
+        self._content: ctk.CTkFrame | None = None
+        self._empty_label: ctk.CTkLabel | None = None
 
-        self.geometry("1280x860")
-        self.minsize(980, 640)
+        self.geometry("1360x900")
+        self.minsize(1040, 660)
         self.configure(fg_color=theme.BACKGROUND)
-        self.grid_columnconfigure(0, weight=0)
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
 
         self._build_menu()
+        self._build_chrome()
+        self._load_project_views()
         self.protocol("WM_DELETE_WINDOW", self.exit_app)
-        self._build_views()
-        self._remember_profile()
+        self._bind_tab_keys()
+        self._remember_project()
 
     @property
-    def database(self) -> DatabaseConnection:
+    def database(self) -> ProjectDatabase:
         return self._db
+
+    @property
+    def project(self) -> Project:
+        return self._project
+
+    @property
+    def active_id(self) -> int | None:
+        return self._active_id
+
+    @property
+    def active_page(self) -> TabPage | None:
+        return self._pages.get(self._active_id) if self._active_id is not None else None
 
     @property
     def adjust_window(self) -> AdjustFieldsView | None:
@@ -114,96 +119,212 @@ class AppWindow(ctk.CTk):
                     return
         raise KeyError(label)
 
-    def set_theme(self, name: str) -> None:
-        if name not in theme.PALETTES:
-            raise KeyError(name)
-        if name == theme.current_palette():
-            self._theme_var.set(name)
-            return
-        if not self._confirm_discard():
-            self._theme_var.set(theme.current_palette())
-            return
-        selected = self.card.entity_id
-        self._close_adjust_window()
-        theme.apply_palette(name)
-        self._theme_var.set(name)
-        self.configure(fg_color=theme.BACKGROUND)
-        self._style_menus()
-        self._build_views()
-        if selected is not None:
-            self.card.show_entity(selected)
-            self.sidebar.set_selected(self.card.entity_id)
-        if self._theme_file is not None:
-            remember_theme(self._theme_file, name)
+    def page_for(self, collection_id: int) -> TabPage:
+        page = self._pages.get(collection_id)
+        if page is None:
+            collection = self._collections.get_collection(collection_id)
+            page = TabPage(
+                self._content, self._db.connection, collection, self._project.images_dir,
+                TkClipboard(self), on_trash_changed=self._update_trash_count,
+                on_terms_changed=self.refresh_terms)
+            page.grid(row=0, column=0, sticky="nsew")
+            page.grid_remove()
+            self._pages[collection_id] = page
+        return page
 
-    def new_project(self) -> None:
-        if not self._confirm_discard():
-            return
-        name = ask_name(self, "New Project", "Project name")
-        if not name:
-            return
-        parent = filedialog.askdirectory(
-            parent=self, title="Choose where to create the project",
-            initialdir=str(self._db.path.parent.parent))
-        if not parent:
+    def refresh_terms(self) -> None:
+        if self.terms is not None:
+            self.terms.refresh()
+
+    def open_entry(self, collection_id: int, entity_id: int) -> None:
+        self.select_tab(collection_id)
+        self.page_for(collection_id).select_entity(entity_id)
+
+    def focus_search(self) -> None:
+        self.global_search.focus()
+
+    def change_color(self, collection_id: int) -> None:
+        collection = self._collections.get_collection(collection_id)
+        chosen = ask_color(self, collection.label, collection.color)
+        if not chosen:
             return
         try:
-            project = self._projects.create_project(Path(parent), name)
+            self._collections.set_color(collection_id, chosen)
         except ServiceError as exc:
-            messagebox.showerror("Can't create project", str(exc), parent=self)
+            messagebox.showerror("Can't change colour", str(exc), parent=self)
             return
-        self.open_profile(next(iter(project.databases.values())))
+        self.refresh_terms()
+        self._refresh_tab_bar(self._active_id)
 
-    def load_profile(self) -> None:
-        if not self._confirm_discard():
+    def select_tab(self, collection_id: int) -> None:
+        if collection_id == self._active_id:
             return
-        chosen = filedialog.askopenfilename(
-            parent=self, title="Load Profile", initialdir=str(self._db.path.parent),
-            filetypes=PROFILE_FILETYPES)
-        if chosen:
-            self.open_profile(Path(chosen))
+        self._show(collection_id)
 
-    def adjust_fields(self) -> None:
-        if self.card.editing:
+    def next_tab(self, offset: int = 1) -> None:
+        order = self.tab_bar.tab_order
+        if not order:
+            return
+        index = order.index(self._active_id) if self._active_id in order else -1
+        self.select_tab(order[(index + offset) % len(order)])
+
+    def add_tab(self) -> None:
+        answer = ask_new_tab(self, taken=[c.label for c in self._collections.list_collections()])
+        if not answer:
+            return
+        label, noun, template_key = answer
+        try:
+            created = self._collections.add_collection(label, noun, template_key)
+        except ServiceError as exc:
+            messagebox.showerror("Can't add tab", str(exc), parent=self)
+            return
+        self._refresh_tab_bar(created.id)
+        self._show(created.id)
+        self.refresh_terms()
+
+    def rename_tab(self, collection_id: int) -> None:
+        current = self._collections.get_collection(collection_id)
+        others = [c.label for c in self._collections.list_collections() if c.id != collection_id]
+        name = ask_name(self, "Rename Tab", "Tab name", current.label, taken=others)
+        if not name:
+            return
+        try:
+            renamed = self._collections.rename_collection(collection_id, name)
+        except ServiceError as exc:
+            messagebox.showerror("Can't rename tab", str(exc), parent=self)
+            return
+        if collection_id in self._pages:
+            self._pages[collection_id].update_collection(renamed)
+        self._refresh_tab_bar(self._active_id)
+        self.refresh_terms()
+
+    def delete_tab(self, collection_id: int) -> None:
+        collection = self._collections.get_collection(collection_id)
+        count = self._collections.count_entries(collection_id)
+        noun = "entry" if count == 1 else "entries"
+        confirmed = messagebox.askyesno(
+            "Move tab to Trash?",
+            f"Move the tab \u201c{collection.label}\u201d and its {count} {noun} to the Trash? "
+            f"You can restore it from the Trash for {RETENTION_DAYS} days.",
+            parent=self)
+        if not confirmed:
+            return
+        order = self.tab_bar.tab_order
+        neighbour = None
+        if collection_id in order:
+            index = order.index(collection_id)
+            others = [cid for cid in order if cid != collection_id]
+            neighbour = others[min(index, len(others) - 1)] if others else None
+        if self._adjust_for == collection_id:
+            self._close_adjust_window()
+        self._collections.trash_collection(collection_id)
+        self.refresh_terms()
+        self._update_trash_count()
+        page = self._pages.pop(collection_id, None)
+        if page is not None:
+            page.destroy()
+        if self._active_id == collection_id:
+            self._active_id = None
+        target = self._active_id if self._active_id is not None else neighbour
+        self._refresh_tab_bar(target)
+        self._show(target)
+
+    def adjust_fields(self, collection_id: int | None = None) -> None:
+        collection_id = self._active_id if collection_id is None else collection_id
+        if collection_id is None:
+            return
+        page = self.page_for(collection_id)
+        if page.editing:
             messagebox.showinfo(
                 "Finish editing first",
                 "Save or cancel the entry you are editing before adjusting fields.",
                 parent=self)
             return
         existing = self.adjust_window
-        if existing is not None:
+        if existing is not None and self._adjust_for == collection_id:
             existing.lift()
             existing.focus_force()
             return
+        self._close_adjust_window()
+        self._adjust_for = collection_id
         self._adjust_window = AdjustFieldsView(
-            self, self._categories, on_changed=self._fields_changed)
+            self, page.categories, on_changed=page.fields_changed,
+            heading=f"Adjust Fields: {page.collection.label}")
 
-    def open_profile(self, path) -> bool:
-        path = Path(path)
+    def open_trash(self) -> None:
+        TrashDialog(self, TrashService(self._db.connection), on_changed=self._trash_changed)
+
+    def new_project(self) -> None:
+        if not self._confirm_discard_all():
+            return
+        name = ask_name(self, "New Project", "Project name")
+        if not name:
+            return
+        parent = filedialog.askdirectory(
+            parent=self, title="Choose where to create the project",
+            initialdir=str(self._project.root.parent))
+        if not parent:
+            return
         try:
-            changed = self._db.switch_profile(path, template=template_for_path(path))
-        except ProfileError as exc:
-            messagebox.showerror("Can't open profile", str(exc), parent=self)
+            created = self._projects.create_project(Path(parent), name)
+        except ServiceError as exc:
+            messagebox.showerror("Can't create project", str(exc), parent=self)
+            return
+        self.open_project(created.root, confirm=False)
+
+    def load_project(self) -> None:
+        if not self._confirm_discard_all():
+            return
+        folder = filedialog.askdirectory(
+            parent=self, title="Load Project", initialdir=str(self._project.root.parent))
+        if folder:
+            self.open_project(Path(folder), confirm=False)
+
+    def open_project(self, folder, confirm: bool = True) -> bool:
+        if confirm and not self._confirm_discard_all():
             return False
-        if changed:
-            self._close_adjust_window()
-            self._build_views()
-            self._remember_profile()
+        try:
+            project = self._projects.locate_project(folder)
+            if project.root == self._project.root:
+                return True
+            self._db.open(project.db_path)
+        except (ServiceError, DatabaseError) as exc:
+            messagebox.showerror("Can't open project", str(exc), parent=self)
+            return False
+        self._close_adjust_window()
+        self._project = project
+        self._load_project_views()
+        self._remember_project()
         return True
 
-    def select_entity(self, entity_id: int) -> None:
-        if not self._confirm_discard():
+    def set_theme(self, name: str) -> None:
+        if name not in theme.PALETTES:
+            raise KeyError(name)
+        if name == theme.current_palette():
+            self._theme_var.set(name)
             return
-        self.card.show_entity(entity_id)
-        self.sidebar.set_selected(self.card.entity_id)
-
-    def add_entity(self) -> None:
-        if not self._confirm_discard():
+        if not self._confirm_discard_all():
+            self._theme_var.set(theme.current_palette())
             return
-        self.card.start_new()
+        active = self._active_id
+        selected = {cid: page.selected_entity_id for cid, page in self._pages.items()}
+        self._close_adjust_window()
+        theme.apply_palette(name)
+        self._theme_var.set(name)
+        self.configure(fg_color=theme.BACKGROUND)
+        self._style_menus()
+        self._build_chrome()
+        self._load_project_views(active_id=active)
+        for collection_id, entity_id in selected.items():
+            if entity_id is not None and collection_id in self._collections_by_id():
+                page = self.page_for(collection_id)
+                page.card.show_entity(entity_id)
+                page.sidebar.set_selected(page.card.entity_id)
+        if self._theme_file is not None:
+            remember_theme(self._theme_file, name)
 
     def exit_app(self) -> None:
-        if not self._confirm_discard():
+        if not self._confirm_discard_all():
             return
         self.shutdown()
         self.destroy()
@@ -212,12 +333,14 @@ class AppWindow(ctk.CTk):
         self._close_adjust_window()
         self._db.close()
 
+    def _collections_by_id(self):
+        return {c.id: c for c in self._collections.list_collections()}
+
     def _build_menu(self) -> None:
         self._menubar = tk.Menu(self)
         self.file_menu = tk.Menu(self._menubar)
         self.file_menu.add_command(label="New Project...", command=self.new_project)
-        self.file_menu.add_command(label="Load Profile...", command=self.load_profile)
-        self.file_menu.add_command(label="Adjust Fields...", command=self.adjust_fields)
+        self.file_menu.add_command(label="Load Project...", command=self.load_project)
         self.file_menu.add_separator()
         self.file_menu.add_command(label="Exit", command=self.exit_app)
         self._menubar.add_cascade(label="File", menu=self.file_menu)
@@ -250,49 +373,86 @@ class AppWindow(ctk.CTk):
                 for position in range(menu.index("end") + 1)
                 if menu.type(position) in ("command", "radiobutton")]
 
-    def _build_views(self) -> None:
-        for view in (self.sidebar, self.card):
-            if view is not None:
-                view.destroy()
+    def _build_chrome(self) -> None:
+        for widget in (self.tab_bar, self._content):
+            if widget is not None:
+                widget.destroy()
+        self._pages = {}
+        self._active_id = None
+        self.tab_bar = TabBar(
+            self, on_select=self.select_tab, on_add=self.add_tab, on_rename=self.rename_tab,
+            on_adjust=self.adjust_fields, on_delete=self.delete_tab, on_trash=self.open_trash,
+            on_color=self.change_color)
+        self.tab_bar.grid(row=0, column=0, sticky="ew")
+        self.global_search = GlobalSearch(
+            self, self.tab_bar.search_entry, lambda: self.terms, self.open_entry)
+        self._content = ctk.CTkFrame(self, corner_radius=0, fg_color=theme.BACKGROUND)
+        self._content.grid(row=1, column=0, sticky="nsew")
+        self._content.grid_columnconfigure(0, weight=1)
+        self._content.grid_rowconfigure(0, weight=1)
+        self._empty_label = ctk.CTkLabel(
+            self._content, text="No tabs yet.\nClick + above to add one.",
+            font=theme.font("placeholder"), text_color=theme.TEXT_MUTED, justify="center")
+        self._empty_label.grid(row=0, column=0)
 
-        connection = self._db.connection
-        path = self._db.path
-        noun = profile_noun(path)
-        self._entities = EntityService(connection)
-        self._categories = CategoryService(connection)
-        self._exporter = ExportService(connection, TkClipboard(self))
+    def _bind_tab_keys(self) -> None:
+        for sequence in ("<Control-k>", "<Control-K>"):
+            self.bind(sequence, lambda _event: (self.focus_search(), "break")[1])
+        self.bind("<Control-Tab>", lambda _event: (self.next_tab(1), "break")[1])
+        for sequence in ("<Control-ISO_Left_Tab>", "<Control-Shift-Tab>"):
+            try:
+                self.bind(sequence, lambda _event: (self.next_tab(-1), "break")[1])
+            except tk.TclError:
+                pass
 
-        self.sidebar = SidebarView(
-            self, self._entities, self._categories, noun=noun, profile_name=path.stem,
-            on_select=self.select_entity, on_add=self.add_entity, title=APP_TITLE)
-        self.sidebar.grid(row=0, column=0, sticky="ns")
-        self.card = CardView(
-            self, self._entities, self._categories, self._exporter,
-            images_dir=path.parent / IMAGES_DIRNAME, noun=noun,
-            on_saved=self._entity_saved, on_deleted=self._entity_deleted,
-            on_duplicated=self._entity_duplicated)
-        self.card.grid(row=0, column=1, sticky="nsew")
-        self.title(f"{APP_TITLE} - {path.stem}")
+    def _load_project_views(self, active_id: int | None = None) -> None:
+        for page in self._pages.values():
+            page.destroy()
+        self._pages = {}
+        self._active_id = None
+        TrashService(self._db.connection).purge_expired()
+        self._collections = CollectionService(self._db.connection)
+        self.terms = TermIndex(self._db.connection)
+        collections = self._collections.list_collections()
+        ids = [c.id for c in collections]
+        target = active_id if active_id in ids else (ids[0] if ids else None)
+        self.tab_bar.set_tabs(collections, target)
+        self._show(target)
+        self._update_trash_count()
+        self.title(f"{APP_TITLE} - {self._project.name}")
 
-    def _entity_saved(self, entity_id: int) -> None:
-        self.sidebar.refresh()
-        self.sidebar.set_selected(entity_id)
+    def _update_trash_count(self) -> None:
+        self.tab_bar.set_trash_count(TrashService(self._db.connection).count())
 
-    def _entity_deleted(self, _entity_id: int) -> None:
-        self.sidebar.set_selected(None)
-        self.sidebar.refresh()
+    def _trash_changed(self) -> None:
+        collections = self._collections.list_collections()
+        ids = [c.id for c in collections]
+        active = self._active_id if self._active_id in ids else (ids[0] if ids else None)
+        self._refresh_tab_bar(active)
+        if active != self._active_id:
+            self._show(active)
+        for page in self._pages.values():
+            page.fields_changed()
+        self.refresh_terms()
+        self._update_trash_count()
 
-    def _entity_duplicated(self, entity_id: int) -> None:
-        self.sidebar.refresh()
-        self.sidebar.set_selected(entity_id)
+    def _refresh_tab_bar(self, active_id: int | None) -> None:
+        self.tab_bar.set_tabs(self._collections.list_collections(), active_id)
 
-    def _fields_changed(self) -> None:
-        self.sidebar.refresh()
-        if self.card.entity_id is not None and not self.card.editing:
-            self.card.show_entity(self.card.entity_id)
+    def _show(self, collection_id: int | None) -> None:
+        current = self.active_page
+        if current is not None:
+            current.grid_remove()
+        self._active_id = collection_id
+        self.tab_bar.set_active(collection_id)
+        if collection_id is None:
+            self._empty_label.grid()
+            return
+        self._empty_label.grid_remove()
+        self.page_for(collection_id).grid()
 
-    def _confirm_discard(self) -> bool:
-        if not self.card.editing:
+    def _confirm_discard_all(self) -> bool:
+        if not any(page.editing for page in self._pages.values()):
             return True
         return messagebox.askyesno(
             "Discard changes?", "You have unsaved changes. Discard them?", parent=self)
@@ -300,9 +460,10 @@ class AppWindow(ctk.CTk):
     def _close_adjust_window(self) -> None:
         window = self.adjust_window
         self._adjust_window = None
+        self._adjust_for = None
         if window is not None:
             window.destroy()
 
-    def _remember_profile(self) -> None:
+    def _remember_project(self) -> None:
         if self._settings_file is not None:
-            remember_profile(self._settings_file, self._db.path)
+            remember_project(self._settings_file, self._project.root)

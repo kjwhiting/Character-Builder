@@ -243,7 +243,12 @@ def styled_combo(parent, values, height=38, **kwargs):
 
 
 def styled_textbox(parent, height=110, **kwargs):
-    return ctk.CTkTextbox(parent, height=height, font=font("body"), **TEXTBOX_STYLE, **kwargs)
+    box = ctk.CTkTextbox(parent, height=height, font=font("body"), **TEXTBOX_STYLE, **kwargs)
+    try:
+        box._x_scrollbar.grid_remove()
+    except AttributeError:
+        pass
+    return box
 
 
 def scrollable(parent, fg_color=SURFACE, **kwargs):
@@ -266,13 +271,21 @@ def ornament(parent, color=GOLD):
     return frame
 
 
-def section_header(parent, text):
+def section_header(parent, text, collapsed=None, on_toggle=None):
     frame = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=0)
     frame.grid_columnconfigure(2, weight=1)
-    ctk.CTkLabel(frame, text="\u25C6", font=font("small"), text_color=GOLD).grid(
-        row=0, column=0, padx=(0, 10))
-    ctk.CTkLabel(frame, text=text.upper(), font=font("subheading"),
-                 text_color=EMPHASIS).grid(row=0, column=1)
+    collapsible = on_toggle is not None
+    marker = ("\u25B8" if collapsed else "\u25BE") if collapsible else "\u25C6"
+    marker_label = ctk.CTkLabel(frame, text=marker, font=font("small"), text_color=GOLD, width=14)
+    marker_label.grid(row=0, column=0, padx=(0, 10))
+    title_label = ctk.CTkLabel(frame, text=text.upper(), font=font("subheading"),
+                               text_color=EMPHASIS)
+    title_label.grid(row=0, column=1)
     tk.Frame(frame, height=1, bd=0, highlightthickness=0, bg=GOLD).grid(
         row=0, column=2, sticky="ew", padx=(14, 0))
+    if collapsible:
+        for widget in (frame, marker_label, title_label):
+            widget.bind("<Button-1>", lambda _event: on_toggle())
+            widget.configure(cursor="hand2")
+        frame.marker_label = marker_label
     return frame

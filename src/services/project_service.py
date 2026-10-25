@@ -2,65 +2,34 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
 
-from src.database.connection import DatabaseConnection
-from src.database.seeds import TEMPLATES, Template
-from src.services.errors import InvalidNameError, ProjectCreationError, ProjectExistsError
-
-IMAGES_DIRNAME = "images"
-_FORBIDDEN_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-
-
-@dataclass(frozen=True)
-class ProfileSpec:
-    label: str
-    filename: str
-
-
-DEFAULT_PROFILES = tuple(
-    ProfileSpec(template["label"], template["profile_filename"])
-    for template in TEMPLATES.values()
+from src.database.connection import ProjectDatabase
+from src.database.seeds import DEFAULT_PROJECT_TEMPLATE_KEYS, get_template
+from src.services.collection_service import CollectionService
+from src.services.errors import (
+    InvalidNameError,
+    InvalidProjectError,
+    ProjectCreationError,
+    ProjectExistsError,
 )
 
-DEFAULT_TEMPLATES: Mapping[str, Template] = {
-    template["label"]: template for template in TEMPLATES.values()
-}
-
-DatabaseInitializer = Callable[[Path, ProfileSpec], None]
-
-
-def make_initializer(templates: Mapping[str, Template] = DEFAULT_TEMPLATES) -> DatabaseInitializer:
-    def initialize(db_path: Path, profile: ProfileSpec) -> None:
-        database = DatabaseConnection()
-        try:
-            database.open(db_path, create=True, template=templates.get(profile.label))
-        finally:
-            database.close()
-
-    return initialize
+PROJECT_DB_NAME = "project.sqlite"
+IMAGES_DIRNAME = "images"
+DEFAULT_PROJECT_NAME = "My World"
+LAST_PROJECT_FILE_NAME = "last_project.txt"
+_FORBIDDEN_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 @dataclass(frozen=True)
 class Project:
     name: str
     root: Path
+    db_path: Path
     images_dir: Path
-    databases: Mapping[str, Path]
 
 
 class ProjectService:
-    def __init__(self, initializer: DatabaseInitializer,
-                 profiles: Sequence[ProfileSpec] = DEFAULT_PROFILES):
-        if not profiles:
-            raise ValueError("At least one profile is required.")
-        filenames = [profile.filename.lower() for profile in profiles]
-        if len(set(filenames)) != len(filenames):
-            raise ValueError("Profile filenames must be unique.")
-        self._initializer = initializer
-        self._profiles = tuple(profiles)
-
-    def create_project(self, parent_dir: Path, name: str) -> Project:
+    def create_project(self, parent_dir, name: str) -> Project:
         cleaned = self._validate_name(name)
         parent = Path(parent_dir)
         if not parent.is_dir():
@@ -74,18 +43,25 @@ class ProjectService:
             raise ProjectCreationError(f"Could not create project folder: {exc}") from exc
 
         try:
-            images_dir = root / IMAGES_DIRNAME
-            images_dir.mkdir()
-            databases = {}
-            for profile in self._profiles:
-                db_path = root / profile.filename
-                self._initializer(db_path, profile)
-                databases[profile.label] = db_path
+            (root / IMAGES_DIRNAME).mkdir()
+            with ProjectDatabase() as database:
+                database.open(root / PROJECT_DB_NAME, create=True)
+                collections = CollectionService(database.connection)
+                for key in DEFAULT_PROJECT_TEMPLATE_KEYS:
+                    collections.add_from_template(get_template(key))
         except Exception as exc:
             shutil.rmtree(root, ignore_errors=True)
             raise ProjectCreationError(f"Could not set up project '{cleaned}': {exc}") from exc
+        return self.locate_project(root)
 
-        return Project(name=cleaned, root=root, images_dir=images_dir, databases=databases)
+    def locate_project(self, folder) -> Project:
+        root = Path(folder).resolve()
+        db_path = root / PROJECT_DB_NAME
+        if not root.is_dir() or not db_path.is_file():
+            raise InvalidProjectError(
+                f"'{root.name}' is not a Worldbuilder project (no {PROJECT_DB_NAME} found).")
+        return Project(name=root.name, root=root, db_path=db_path,
+                       images_dir=root / IMAGES_DIRNAME)
 
     @staticmethod
     def _validate_name(name):
@@ -97,3 +73,22 @@ class ProjectService:
         if _FORBIDDEN_NAME_CHARS.search(cleaned):
             raise InvalidNameError('Project name cannot contain any of < > : " / \\ | ? * .')
         return cleaned
+
+
+def remember_project(settings_file, folder) -> bool:
+    try:
+        Path(settings_file).write_text(str(Path(folder).resolve()), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def recall_project(settings_file) -> Path | None:
+    try:
+        text = Path(settings_file).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    folder = Path(text) if text else None
+    if folder is not None and (folder / PROJECT_DB_NAME).is_file():
+        return folder
+    return None

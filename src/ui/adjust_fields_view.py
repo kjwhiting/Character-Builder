@@ -4,9 +4,32 @@ from typing import Callable
 
 import customtkinter as ctk
 
-from src.services.category_service import FIELD_TYPES, CategoryService, Field
+from src.services.category_service import CategoryService, Field
 from src.services.errors import ServiceError
 from src.ui import theme
+from src.ui.field_layout import ALWAYS_FULL_TYPES
+
+
+FIELD_TYPE_LABELS = {
+    "text": "Text",
+    "textarea": "Paragraph",
+    "list": "List",
+    "choice": "Choice",
+    "multichoice": "Multi-choice",
+    "checkbox": "Checkbox",
+    "number": "Number",
+}
+TYPE_FROM_LABEL = {label: key for key, label in FIELD_TYPE_LABELS.items()}
+
+
+def options_summary(field: Field) -> str:
+    if field.field_type in ("choice", "multichoice"):
+        count = len(field.options.get("choices", []))
+        return f"Options ({count})" if count else "Add options"
+    if field.field_type == "number":
+        unit = field.options.get("unit", "")
+        return f"Unit: {unit}" if unit else "Set unit"
+    return ""
 
 
 def find_drop_target(y, blocks):
@@ -39,11 +62,11 @@ def drop_line_y(target, blocks):
 
 
 class NameDialog(ctk.CTkToplevel):
-    def __init__(self, master, title, prompt):
+    def __init__(self, master, title, prompt, initial="", taken=()):
         super().__init__(master)
         self.result = None
+        self._taken = {name.strip().lower() for name in taken}
         self.title(title)
-        self.geometry("460x230")
         self.resizable(False, False)
         self.configure(fg_color=theme.BACKGROUND)
         self.transient(master)
@@ -53,11 +76,18 @@ class NameDialog(ctk.CTkToplevel):
                      anchor="w").pack(padx=32, pady=(30, 10), anchor="w")
         self.entry = theme.styled_entry(self, width=396)
         self.entry.pack(padx=32)
+        if initial:
+            self.entry.insert(0, initial)
         self.entry.bind("<Return>", lambda _event: self.ok())
+        self.entry.bind("<KeyRelease>", lambda _event: self._check())
+        self.error_label = ctk.CTkLabel(self, text="", font=theme.font("note"),
+                                        text_color=theme.DANGER, anchor="w")
+        self.error_label.pack(padx=32, pady=(6, 0), anchor="w")
 
         row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(fill="x", padx=32, pady=24)
-        theme.primary_button(row, "OK", self.ok, width=100).pack(side="left")
+        row.pack(fill="x", padx=32, pady=18)
+        self.ok_button = theme.primary_button(row, "OK", self.ok, width=100)
+        self.ok_button.pack(side="left")
         theme.secondary_button(row, "Cancel", self.destroy, width=100).pack(side="left", padx=10)
         self.after(150, self._finish_setup)
 
@@ -69,27 +99,96 @@ class NameDialog(ctk.CTkToplevel):
         except tk.TclError:
             pass
 
+    def is_taken(self, value: str) -> bool:
+        return value.strip().lower() in self._taken
+
+    def _check(self):
+        value = self.entry.get()
+        if value.strip() and self.is_taken(value):
+            self.error_label.configure(text="That name is already in use.")
+            self.ok_button.configure(state="disabled")
+        else:
+            self.error_label.configure(text="")
+            self.ok_button.configure(state="normal")
+
     def ok(self):
         value = self.entry.get().strip()
         if not value:
             messagebox.showwarning("Name required", "Please enter a name.", parent=self)
             return
+        if self.is_taken(value):
+            self._check()
+            return
         self.result = value
         self.destroy()
 
 
-def ask_name(parent, title, prompt):
-    dialog = NameDialog(parent, title, prompt)
+def ask_name(parent, title, prompt, initial="", taken=()):
+    dialog = NameDialog(parent, title, prompt, initial, taken)
+    parent.wait_window(dialog)
+    return dialog.result
+
+
+class FieldOptionsDialog(ctk.CTkToplevel):
+    def __init__(self, master, field: Field):
+        super().__init__(master)
+        self.result = None
+        self._field = field
+        self._is_number = field.field_type == "number"
+        self.title(f"Options: {field.name}")
+        self.resizable(False, False)
+        self.configure(fg_color=theme.BACKGROUND)
+        self.transient(master)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+        prompt = ("Unit shown after the number (optional)" if self._is_number
+                  else "Choices, one per line")
+        ctk.CTkLabel(self, text=prompt, font=theme.font("subheading"), text_color=theme.TEXT,
+                     anchor="w").pack(padx=32, pady=(28, 10), anchor="w")
+        if self._is_number:
+            self.input = theme.styled_entry(self, width=396, placeholder_text="cm, kg, years")
+            self.input.insert(0, field.options.get("unit", ""))
+        else:
+            self.input = theme.styled_textbox(self, height=220, width=396)
+            self.input.insert("1.0", "\n".join(field.options.get("choices", [])))
+        self.input.pack(padx=32)
+
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=32, pady=20)
+        theme.primary_button(row, "Save", self.save, width=100).pack(side="left")
+        theme.secondary_button(row, "Cancel", self.destroy, width=100).pack(side="left", padx=10)
+        self.after(150, self._finish_setup)
+
+    def _finish_setup(self):
+        try:
+            self.lift()
+            self.grab_set()
+            self.input.focus_set()
+        except tk.TclError:
+            pass
+
+    def save(self):
+        if self._is_number:
+            self.result = {"unit": self.input.get().strip()}
+        else:
+            self.result = {"choices": self.input.get("1.0", "end-1c").splitlines()}
+        self.destroy()
+
+
+def ask_field_options(parent, field: Field):
+    dialog = FieldOptionsDialog(parent, field)
     parent.wait_window(dialog)
     return dialog.result
 
 
 class AdjustFieldsView(ctk.CTkToplevel):
-    TYPE_WIDTH = 110
+    TYPE_WIDTH = 150
+    OPTIONS_WIDTH = 120
+    DISPLAY_WIDTH = 90
     DELETE_WIDTH = 84
 
     def __init__(self, master, categories: CategoryService,
-                 on_changed: Callable[[], None] | None = None):
+                 on_changed: Callable[[], None] | None = None, heading: str = "Adjust Fields"):
         super().__init__(master)
         self._categories = categories
         self._on_changed = on_changed or (lambda: None)
@@ -98,8 +197,8 @@ class AdjustFieldsView(ctk.CTkToplevel):
         self._busy = False
         self._drag: dict | None = None
 
-        self.title("Adjust Fields")
-        self.geometry("920x760")
+        self.title(heading)
+        self.geometry("1020x760")
         self.minsize(760, 500)
         self.configure(fg_color=theme.BACKGROUND)
         self.transient(master)
@@ -107,7 +206,7 @@ class AdjustFieldsView(ctk.CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
 
-        ctk.CTkLabel(self, text="Adjust Fields", font=theme.font("title"),
+        ctk.CTkLabel(self, text=heading, font=theme.font("title"),
                      text_color=theme.TEXT, anchor="w").grid(
             row=0, column=0, sticky="ew", padx=34, pady=(28, 4))
         theme.ornament(self).grid(row=1, column=0, sticky="ew", padx=34, pady=(0, 8))
@@ -141,13 +240,16 @@ class AdjustFieldsView(ctk.CTkToplevel):
                 for block in self._layout]
 
     def add_category(self) -> None:
-        name = ask_name(self, "Add Category", "New category name")
+        name = ask_name(self, "Add Category", "New category name",
+                        taken=self._categories.list_categories())
         self._regrab()
         if name:
             self._apply(lambda: self._categories.add_category(name))
 
     def rename_category(self, category: str) -> None:
-        name = ask_name(self, "Rename Category", f"New name for \u201c{category}\u201d")
+        others = [c for c in self._categories.list_categories() if c != category]
+        name = ask_name(self, "Rename Category", f"New name for \u201c{category}\u201d",
+                        initial=category, taken=others)
         self._regrab()
         if name:
             self._apply(lambda: self._categories.rename_category(category, name))
@@ -165,7 +267,9 @@ class AdjustFieldsView(ctk.CTkToplevel):
         self._apply(lambda: self._categories.reorder_categories(names))
 
     def add_field(self, category: str) -> None:
-        name = ask_name(self, "Add Field", f"New field name in \u201c{category}\u201d")
+        taken = [f.name for f in self._categories.list_fields(category)]
+        name = ask_name(self, "Add Field", f"New field name in \u201c{category}\u201d",
+                        taken=taken)
         self._regrab()
         if name:
             self._apply(lambda: self._categories.add_field(category, name))
@@ -175,6 +279,17 @@ class AdjustFieldsView(ctk.CTkToplevel):
 
     def change_field_type(self, field_id: int, field_type: str) -> None:
         self._apply(lambda: self._categories.change_field_type(field_id, field_type))
+
+    def set_display(self, field_id: int, show_empty: bool | None = None,
+                    full_width: bool | None = None) -> None:
+        self._apply(lambda: self._categories.set_field_display(field_id, show_empty, full_width))
+
+    def edit_options(self, field_id: int) -> None:
+        field = self._categories.get_field(field_id)
+        result = ask_field_options(self, field)
+        self._regrab()
+        if result is not None:
+            self._apply(lambda: self._categories.set_field_options(field_id, result))
 
     def delete_field(self, field_id: int) -> None:
         field = self._categories.get_field(field_id)
@@ -319,16 +434,52 @@ class AdjustFieldsView(ctk.CTkToplevel):
         entry.bind("<FocusOut>", lambda _event, f=field, e=entry: self._commit_rename(f, e))
 
         combo = theme.styled_combo(
-            frame, list(FIELD_TYPES), height=34, width=self.TYPE_WIDTH,
-            command=lambda value, f=field: self.change_field_type(f.id, value))
-        combo.set(field.field_type)
+            frame, list(FIELD_TYPE_LABELS.values()), height=34, width=self.TYPE_WIDTH,
+            command=lambda label, f=field: self.change_field_type(f.id, TYPE_FROM_LABEL[label]))
+        combo.set(FIELD_TYPE_LABELS.get(field.field_type, field.field_type))
         combo.grid(row=0, column=2, padx=4, pady=6)
+
+        summary = options_summary(field)
+        if summary:
+            theme.secondary_button(
+                frame, summary, lambda f=field: self.edit_options(f.id),
+                width=self.OPTIONS_WIDTH, height=34).grid(row=0, column=3, padx=4, pady=6)
+        else:
+            ctk.CTkLabel(frame, text="", width=self.OPTIONS_WIDTH).grid(
+                row=0, column=3, padx=4, pady=6)
+
+        display = theme.secondary_button(
+            frame, "Display", lambda: None, width=self.DISPLAY_WIDTH, height=34)
+        display.configure(command=lambda f=field, b=display: self._show_display_menu(f, b))
+        display.grid(row=0, column=4, padx=4, pady=6)
 
         theme.secondary_button(
             frame, "Delete", lambda f=field: self.delete_field(f.id),
             width=self.DELETE_WIDTH, height=34, danger=True).grid(
-            row=0, column=3, padx=(4, 10), pady=6)
+            row=0, column=5, padx=(4, 10), pady=6)
         return frame
+
+    def _show_display_menu(self, field: Field, button) -> None:
+        menu = tk.Menu(self, tearoff=False, bg=theme.SURFACE, fg=theme.TEXT,
+                       activebackground=theme.SELECTION_BG, activeforeground=theme.TEXT,
+                       selectcolor=theme.TEXT, font=(theme.FONT_FAMILY, 12))
+        show_var = tk.BooleanVar(master=self, value=field.show_empty)
+        menu.add_checkbutton(
+            label="Show when empty", variable=show_var,
+            command=lambda: self.set_display(field.id, show_empty=show_var.get()))
+        if field.field_type in ALWAYS_FULL_TYPES:
+            menu.add_checkbutton(
+                label="Full width (always for this type)",
+                variable=tk.BooleanVar(master=self, value=True), state="disabled")
+        else:
+            wide_var = tk.BooleanVar(master=self, value=field.full_width)
+            menu.add_checkbutton(
+                label="Full width", variable=wide_var,
+                command=lambda: self.set_display(field.id, full_width=wide_var.get()))
+        try:
+            menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+        finally:
+            menu.grab_release()
 
     def _commit_rename(self, field, entry):
         if self._busy:

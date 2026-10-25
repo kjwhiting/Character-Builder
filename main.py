@@ -3,14 +3,17 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
-from src.database.connection import (
-    LAST_PROFILE_FILE_NAME,
-    DatabaseConnection,
-    ProfileError,
-    resolve_startup_profile,
+from src.database.connection import DatabaseError, ProjectDatabase
+from src.services.errors import ServiceError
+from src.services.project_service import (
+    DEFAULT_PROJECT_NAME,
+    LAST_PROJECT_FILE_NAME,
+    Project,
+    ProjectService,
+    recall_project,
 )
 from src.ui import theme
-from src.ui.app_window import THEME_FILE_NAME, AppWindow, recall_theme, template_for_path
+from src.ui.app_window import THEME_FILE_NAME, AppWindow, recall_theme
 
 
 def application_dir() -> Path:
@@ -23,18 +26,34 @@ def show_startup_error(message: str) -> None:
     window = tk.Tk()
     window.withdraw()
     try:
-        messagebox.showerror("Character Builder can't start", message, parent=window)
+        messagebox.showerror("Worldbuilder can't start", message, parent=window)
     finally:
         window.destroy()
 
 
+def choose_startup_project(base_dir: Path, service: ProjectService) -> Project:
+    recalled = recall_project(base_dir / LAST_PROJECT_FILE_NAME)
+    if recalled is not None:
+        try:
+            return service.locate_project(recalled)
+        except ServiceError:
+            pass
+    default = base_dir / DEFAULT_PROJECT_NAME
+    if default.exists():
+        return service.locate_project(default)
+    return service.create_project(base_dir, DEFAULT_PROJECT_NAME)
+
+
 def create_app(base_dir: Path) -> AppWindow:
     theme.apply_palette(recall_theme(base_dir / THEME_FILE_NAME) or theme.DEFAULT_PALETTE)
-    database = DatabaseConnection()
-    path = resolve_startup_profile(base_dir)
-    database.open(path, create=True, template=template_for_path(path))
+    service = ProjectService()
+    project = choose_startup_project(base_dir, service)
+    database = ProjectDatabase()
+    database.open(project.db_path)
     try:
-        return AppWindow(database, settings_file=base_dir / LAST_PROFILE_FILE_NAME)
+        return AppWindow(
+            database, project, settings_file=base_dir / LAST_PROJECT_FILE_NAME,
+            project_service=service)
     except BaseException:
         database.close()
         raise
@@ -43,7 +62,7 @@ def create_app(base_dir: Path) -> AppWindow:
 def main() -> int:
     try:
         app = create_app(application_dir())
-    except ProfileError as exc:
+    except (DatabaseError, ServiceError) as exc:
         show_startup_error(str(exc))
         return 1
     try:

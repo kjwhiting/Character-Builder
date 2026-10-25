@@ -3,7 +3,7 @@ from typing import Callable
 
 from src.services.category_service import CategoryService
 from src.services.entity_service import EntityService
-from src.services.errors import NothingToExportError
+from src.services.value_format import format_value
 
 ClipboardWriter = Callable[[str], None]
 
@@ -18,17 +18,10 @@ class TkClipboard:
         self._widget.update()
 
 
-def _format_value(raw, field_type):
-    text = (raw or "").strip()
-    if field_type == "list":
-        return ", ".join(item.strip() for item in text.splitlines() if item.strip())
-    return text
-
-
 class ExportService:
-    def __init__(self, conn: sqlite3.Connection, clipboard: ClipboardWriter):
-        self._entities = EntityService(conn)
-        self._categories = CategoryService(conn)
+    def __init__(self, conn: sqlite3.Connection, collection_id: int, clipboard: ClipboardWriter):
+        self._entities = EntityService(conn, collection_id)
+        self._categories = CategoryService(conn, collection_id)
         self._clipboard = clipboard
 
     def build_plain_text(self, entity_id: int) -> str:
@@ -36,14 +29,11 @@ class ExportService:
         values = self._entities.get_values(entity_id)
         groups: dict[str, list[str]] = {}
         for field in self._categories.list_fields():
-            value = _format_value(values.get(field.id), field.field_type)
-            if value:
-                groups.setdefault(field.category, []).append(f"{field.name}: {value}")
+            value = format_value(field.field_type, field.options, values.get(field.id))
+            groups.setdefault(field.category, []).append(f"{field.name}: {value}".rstrip())
         return "\n\n".join("\n".join([category, *lines]) for category, lines in groups.items())
 
     def copy_entity(self, entity_id: int) -> str:
         text = self.build_plain_text(entity_id)
-        if not text:
-            raise NothingToExportError("This entry has no filled-in fields to copy.")
         self._clipboard(text)
         return text

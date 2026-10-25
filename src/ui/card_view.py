@@ -7,12 +7,14 @@ from typing import Callable
 import customtkinter as ctk
 from PIL import Image
 
-from src.database.seeds import ENTITY_TYPES
 from src.services.category_service import CategoryService
 from src.services.entity_service import EntityService
-from src.services.errors import EntityNotFoundError, NothingToExportError, ServiceError
+from src.services.errors import EntityNotFoundError, ServiceError
+from src.services.value_format import format_value, split_lines
 from src.services.export_service import ExportService
-from src.ui import theme
+from src.ui import field_inputs, theme
+from src.ui.field_layout import is_full_width, plan_layout
+from src.ui.new_field_dialog import ask_new_field
 
 IMAGE_FILETYPES = [("Images", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"), ("All files", "*.*")]
 
@@ -76,12 +78,14 @@ class CardView(ctk.CTkFrame):
         self._edit_id: int | None = None
         self._editing = False
         self._image_ref = None
-        self._wrap_labels: list[tuple[ctk.CTkLabel, int, int]] = []
+        self._wrap_labels: list[tuple[ctk.CTkLabel, int, int, int]] = []
+        self._collapsed: set[str] = set()
         self._field_widgets: dict[int, tuple[tk.Widget, str]] = {}
         self.action_buttons: dict[str, ctk.CTkButton] = {}
         self.name_entry = None
-        self.type_box = None
         self.image_entry = None
+        self.aliases_box = None
+        self._body_frame = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -96,9 +100,8 @@ class CardView(ctk.CTkFrame):
     def entity_id(self) -> int | None:
         return self._entity_id
 
-    def set_profile(self, noun: str, images_dir: Path) -> None:
+    def set_noun(self, noun: str) -> None:
         self._noun = noun
-        self._images_dir = Path(images_dir)
 
     def show_empty(self) -> None:
         self._editing = False
@@ -157,31 +160,27 @@ class CardView(ctk.CTkFrame):
                 row=row, column=0, sticky="w", pady=(4, 8))
             row += 1
 
-        ctk.CTkLabel(body, text=f"  {entity.type}  ", font=theme.font("small"),
+        ctk.CTkLabel(body, text=f"  {self._noun}  ", font=theme.font("small"),
                      text_color=theme.TEXT, fg_color=theme.SELECTION_BG,
                      corner_radius=10, height=22).grid(row=row, column=0, sticky="w", pady=(0, 8))
         row += 1
         title = ctk.CTkLabel(body, text=entity.name, font=theme.font("title"),
                              text_color=theme.TEXT, anchor="w", justify="left", wraplength=640)
         title.grid(row=row, column=0, sticky="w")
-        self._wrap_labels.append((title, 130, 230))
+        self._wrap_labels.append((title, 130, 230, 1))
         row += 1
+        aliases = self._entities.get_aliases(entity_id)
+        if aliases:
+            alias_label = ctk.CTkLabel(
+                body, text="Also known as: " + ", ".join(aliases), font=theme.font("note"),
+                text_color=theme.TEXT_MUTED, anchor="w", justify="left", wraplength=640)
+            alias_label.grid(row=row, column=0, sticky="w", pady=(2, 0))
+            self._wrap_labels.append((alias_label, 130, 230, 1))
+            row += 1
         theme.ornament(body).grid(row=row, column=0, sticky="ew", pady=(10, 2), padx=(0, 18))
         row += 1
 
-        groups = self._filled_groups(entity_id)
-        if not groups:
-            ctk.CTkLabel(body, text="No details yet. Press Edit to add some.",
-                         text_color=theme.TEXT_MUTED, font=theme.font("note")).grid(
-                row=row, column=0, sticky="w", pady=24)
-            return
-
-        for category, items in groups.items():
-            theme.section_header(body, category).grid(
-                row=row, column=0, sticky="ew", pady=(30, 10), padx=(0, 18))
-            row += 1
-            for field, value in items:
-                row = self._show_value(body, row, field, value)
+        self._show_sections(body, row, entity_id)
 
     def start_edit(self) -> None:
         if self._entity_id is None:
@@ -189,24 +188,23 @@ class CardView(ctk.CTkFrame):
         entity = self._entities.get_entity(self._entity_id)
         self._build_form(
             self._entity_id,
-            {"name": entity.name, "type": entity.type, "image": entity.image,
+            {"name": entity.name, "image": entity.image,
+             "aliases": self._entities.get_aliases(entity.id),
              "values": self._entities.get_values(entity.id)},
         )
 
     def start_new(self) -> None:
-        self._build_form(None, {"name": "", "type": self._noun, "image": "", "values": {}})
+        self._build_form(None, {"name": "", "image": "", "aliases": [], "values": {}})
 
     def collect_form(self) -> dict:
         values = {}
-        for field_id, (widget, field_type) in self._field_widgets.items():
-            raw = widget.get() if field_type == "text" else widget.get("1.0", "end-1c")
-            if field_type == "list":
-                raw = "\n".join(item.strip() for item in raw.splitlines() if item.strip())
-            values[field_id] = raw.strip()
+        for field_id, (widget, _field_type) in self._field_widgets.items():
+            values[field_id] = field_inputs.read_input(widget).strip()
         return {
             "name": self.name_entry.get().strip(),
-            "type": self.type_box.get(),
             "image": self.image_entry.get().strip(),
+            "aliases": [line.strip() for line in
+                        self.aliases_box.get("1.0", "end-1c").splitlines() if line.strip()],
             "values": values,
         }
 
@@ -217,11 +215,11 @@ class CardView(ctk.CTkFrame):
         try:
             if self._edit_id is None:
                 entity_id = self._entities.create_entity(
-                    data["name"], data["type"], data["image"], data["values"])
+                    data["name"], data["image"], data["values"], data["aliases"])
             else:
                 entity_id = self._edit_id
                 self._entities.update_entity(
-                    entity_id, data["name"], data["type"], data["image"], data["values"])
+                    entity_id, data["name"], data["image"], data["values"], data["aliases"])
         except ServiceError as exc:
             messagebox.showwarning("Can't save", str(exc), parent=self)
             self.name_entry.focus_set()
@@ -242,7 +240,9 @@ class CardView(ctk.CTkFrame):
             return
         entity = self._entities.get_entity(self._edit_id)
         confirmed = messagebox.askyesno(
-            "Delete", f"Permanently delete \u201c{entity.name}\u201d? This can't be undone.",
+            "Move to Trash?",
+            f"Move \u201c{entity.name}\u201d to the Trash? "
+            "You can restore it from the Trash for 30 days.",
             parent=self)
         if not confirmed:
             return
@@ -266,9 +266,6 @@ class CardView(ctk.CTkFrame):
             return
         try:
             self._exporter.copy_entity(self._entity_id)
-        except NothingToExportError as exc:
-            messagebox.showinfo("Nothing to copy", str(exc), parent=self)
-            return
         except ServiceError as exc:
             messagebox.showwarning("Can't copy", str(exc), parent=self)
             return
@@ -291,37 +288,108 @@ class CardView(ctk.CTkFrame):
         self.image_entry.delete(0, "end")
         self.image_entry.insert(0, filename)
 
-    def _filled_groups(self, entity_id):
+    def _show_sections(self, body, row, entity_id):
         values = self._entities.get_values(entity_id)
-        groups = {}
+        groups: dict[str, list] = {}
         for field in self._categories.list_fields():
             value = (values.get(field.id) or "").strip()
-            if value:
+            if value or field.show_empty:
                 groups.setdefault(field.category, []).append((field, value))
-        return groups
+        if not groups:
+            ctk.CTkLabel(body, text="No details yet. Press Edit to add some.",
+                         text_color=theme.TEXT_MUTED, font=theme.font("note")).grid(
+                row=row, column=0, sticky="w", pady=(18, 6))
+            row += 1
+        for category, items in groups.items():
+            row = self._add_section(
+                body, row, category, lambda section, items=items: self._fill_view(section, items))
+        self._add_field_button(body, row)
 
-    def _show_value(self, body, row, field, value):
-        if field.field_type == "textarea":
-            label = ctk.CTkLabel(body, text=value, font=theme.font("body"),
-                                 text_color=theme.TEXT, anchor="w", justify="left",
-                                 wraplength=640)
-            label.grid(row=row, column=0, sticky="w", pady=4)
-            self._wrap_labels.append((label, 130, 230))
-            return row + 1
+    def _add_section(self, body, row, category, fill):
+        section = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
+        section.grid_columnconfigure(0, weight=1, uniform="cells")
+        section.grid_columnconfigure(1, weight=1, uniform="cells")
+        header = theme.section_header(
+            body, category, collapsed=category in self._collapsed,
+            on_toggle=lambda: self._toggle_section(category, header, section))
+        header.grid(row=row, column=0, sticky="ew", pady=(20, 6), padx=(0, 18))
+        section.grid(row=row + 1, column=0, sticky="ew", padx=(0, 18))
+        if category in self._collapsed:
+            section.grid_remove()
+        fill(section)
+        return row + 2
 
-        shown = value
+    def _toggle_section(self, category, header, section):
+        if category in self._collapsed:
+            self._collapsed.discard(category)
+            section.grid()
+            header.marker_label.configure(text="\u25BE")
+        else:
+            self._collapsed.add(category)
+            section.grid_remove()
+            header.marker_label.configure(text="\u25B8")
+
+    def _add_field_button(self, body, row):
+        theme.secondary_button(body, "+ Add field", self.add_field, width=140).grid(
+            row=row, column=0, sticky="w", pady=(26, 10))
+
+    def _fill_view(self, section, items):
+        widths = [is_full_width(field.field_type, field.full_width) for field, _ in items]
+        for index, grid_row, column, span in plan_layout(widths):
+            field, value = items[index]
+            self._view_cell(section, field, value, grid_row, column, span)
+
+    def _view_cell(self, section, field, value, grid_row, column, span):
+        cell = ctk.CTkFrame(section, fg_color="transparent", corner_radius=0)
+        cell.grid(row=grid_row, column=column, columnspan=span, sticky="ew", pady=5,
+                  padx=(0, 18) if column == 0 and span == 1 else (0, 0))
+        ctk.CTkLabel(cell, text=field.name, font=theme.font("label"),
+                     text_color=theme.TEXT_MUTED, anchor="w").pack(anchor="w")
         if field.field_type == "list":
-            shown = "\n".join(
-                "\u2022 " + item.strip() for item in value.splitlines() if item.strip())
-        line = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
-        line.grid(row=row, column=0, sticky="ew", pady=4)
-        ctk.CTkLabel(line, text=field.name, font=theme.font("label"), text_color=theme.TEXT_MUTED,
-                     width=190, anchor="nw", justify="left").grid(row=0, column=0, sticky="nw")
-        label = ctk.CTkLabel(line, text=shown, font=theme.font("body"), text_color=theme.TEXT,
-                             anchor="w", justify="left", wraplength=470)
-        label.grid(row=0, column=1, sticky="w", padx=(10, 0))
-        self._wrap_labels.append((label, 400, 230))
-        return row + 1
+            shown = "\n".join("\u2022 " + item for item in split_lines(value))
+        else:
+            shown = format_value(field.field_type, field.options, value)
+        empty = not shown or (not value and field.field_type != "checkbox")
+        label = ctk.CTkLabel(
+            cell, text="Not set" if empty and not shown else shown,
+            font=theme.font("note" if empty else "body"),
+            text_color=theme.TEXT_MUTED if empty else theme.TEXT,
+            anchor="w", justify="left", wraplength=300)
+        label.pack(anchor="w", fill="x")
+        self._wrap_labels.append((label, 150 if span == 2 else 190, 140, 1 if span == 2 else 2))
+
+    def add_field(self) -> None:
+        result = ask_new_field(self, self._categories)
+        if not result:
+            return
+        created_section = False
+        try:
+            if result["new_category"]:
+                self._categories.add_category(result["category"])
+                created_section = True
+            self._categories.add_field(
+                result["category"], result["name"], result["type"], result["options"])
+        except ServiceError as exc:
+            if created_section:
+                try:
+                    self._categories.delete_category(result["category"])
+                except ServiceError:
+                    pass
+            messagebox.showwarning("Can't add field", str(exc), parent=self)
+            return
+        self._collapsed.discard(result["category"])
+        if self._editing:
+            preset = self.collect_form()
+            self._build_form(self._edit_id, preset)
+        elif self._entity_id is not None:
+            self.show_entity(self._entity_id)
+        self.after(120, self._scroll_to_bottom)
+
+    def _scroll_to_bottom(self):
+        try:
+            self._body_frame._parent_canvas.yview_moveto(1.0)
+        except (AttributeError, tk.TclError):
+            pass
 
     def _build_form(self, entity_id, preset):
         self._editing = True
@@ -340,26 +408,23 @@ class CardView(ctk.CTkFrame):
         ctk.CTkLabel(body, text=heading, font=theme.font("heading"), text_color=theme.TEXT,
                      anchor="w").grid(row=row, column=0, sticky="w", pady=(2, 4))
         row += 1
-        theme.ornament(body).grid(row=row, column=0, sticky="ew", padx=(0, 18), pady=(0, 8))
+        theme.ornament(body).grid(row=row, column=0, sticky="ew", padx=(0, 18), pady=(0, 6))
         row += 1
 
-        row = self._form_label(body, row, "Name", top=10)
+        row = self._form_label(body, row, "Name", top=8)
         self.name_entry = theme.styled_entry(body)
         self.name_entry.insert(0, preset["name"])
         self.name_entry.grid(row=row, column=0, sticky="ew", padx=(0, 18))
         row += 1
 
-        row = self._form_label(body, row, "Type", top=12)
-        type_options = list(ENTITY_TYPES)
-        for extra in (self._noun, preset["type"]):
-            if extra and extra not in type_options:
-                type_options.append(extra)
-        self.type_box = theme.styled_combo(body, type_options, width=230)
-        self.type_box.set(preset["type"] or self._noun)
-        self.type_box.grid(row=row, column=0, sticky="w")
+        row = self._form_label(body, row, "Also known as  (one per line)", top=10)
+        self.aliases_box = theme.styled_textbox(body, height=64)
+        self.aliases_box.insert("1.0", "\n".join(preset.get("aliases", [])))
+        field_inputs.make_tabbable(self.aliases_box)
+        self.aliases_box.grid(row=row, column=0, sticky="ew", padx=(0, 18))
         row += 1
 
-        row = self._form_label(body, row, "Image filename (in ./images/)", top=12)
+        row = self._form_label(body, row, "Image filename (in ./images/)", top=10)
         image_row = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
         image_row.grid(row=row, column=0, sticky="ew", padx=(0, 18))
         image_row.grid_columnconfigure(0, weight=1)
@@ -370,29 +435,31 @@ class CardView(ctk.CTkFrame):
             row=0, column=1, padx=(10, 0))
         row += 1
 
-        current_category = None
+        by_category: dict[str, list] = {}
         for field in self._categories.list_fields():
-            if field.category != current_category:
-                current_category = field.category
-                theme.section_header(body, current_category).grid(
-                    row=row, column=0, sticky="ew", padx=(0, 18), pady=(30, 4))
-                row += 1
-            suffix = "  (one per line)" if field.field_type == "list" else ""
-            row = self._form_label(body, row, field.name + suffix, top=10)
-            value = preset["values"].get(field.id, "") or ""
-            if field.field_type in ("textarea", "list"):
-                widget = theme.styled_textbox(
-                    body, height=130 if field.field_type == "textarea" else 96)
-                widget.insert("1.0", value)
-                self._make_tabbable(widget)
-            else:
-                widget = theme.styled_entry(body)
-                widget.insert(0, value)
-            widget.grid(row=row, column=0, sticky="ew", padx=(0, 18))
-            self._field_widgets[field.id] = (widget, field.field_type)
-            row += 1
+            by_category.setdefault(field.category, []).append(field)
+        for category, fields in by_category.items():
+            row = self._add_section(
+                body, row, category,
+                lambda section, fields=fields: self._fill_form(section, fields, preset))
+        self._add_field_button(body, row)
 
         self.after(50, self._focus_name)
+
+    def _fill_form(self, section, fields, preset):
+        widths = [is_full_width(field.field_type, field.full_width) for field in fields]
+        for index, grid_row, column, span in plan_layout(widths):
+            field = fields[index]
+            cell = ctk.CTkFrame(section, fg_color="transparent", corner_radius=0)
+            cell.grid(row=grid_row, column=column, columnspan=span, sticky="ew", pady=5,
+                      padx=(0, 18) if column == 0 and span == 1 else (0, 0))
+            ctk.CTkLabel(cell, text=field.name + field_inputs.field_hint(field),
+                         font=theme.font("label"), text_color=theme.TEXT_MUTED,
+                         anchor="w").pack(anchor="w", pady=(0, 3))
+            widget = field_inputs.build_input(cell, field, preset["values"].get(field.id, "") or "")
+            stretch = isinstance(widget, (ctk.CTkTextbox, ctk.CTkEntry))
+            widget.pack(fill="x" if stretch else None, anchor="w")
+            self._field_widgets[field.id] = (widget, field.field_type)
 
     def _form_label(self, parent, row, text, top):
         ctk.CTkLabel(parent, text=text, font=theme.font("label"), text_color=theme.TEXT_MUTED,
@@ -405,23 +472,6 @@ class CardView(ctk.CTkFrame):
         except (tk.TclError, AttributeError):
             pass
 
-    @staticmethod
-    def _make_tabbable(textbox):
-        def forward(event):
-            event.widget.tk_focusNext().focus_set()
-            return "break"
-
-        def backward(event):
-            event.widget.tk_focusPrev().focus_set()
-            return "break"
-
-        textbox.bind("<Tab>", forward)
-        for sequence in ("<Shift-Tab>", "<ISO_Left_Tab>"):
-            try:
-                textbox.bind(sequence, backward)
-            except tk.TclError:
-                pass
-
     def _clear(self):
         for child in self.winfo_children():
             child.destroy()
@@ -429,8 +479,8 @@ class CardView(ctk.CTkFrame):
         self._field_widgets = {}
         self.action_buttons = {}
         self.name_entry = None
-        self.type_box = None
         self.image_entry = None
+        self.aliases_box = None
 
     def _topbar(self):
         bar = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
@@ -443,13 +493,20 @@ class CardView(ctk.CTkFrame):
         card.grid_rowconfigure(0, weight=1)
         card.grid_columnconfigure(0, weight=1)
         body = theme.scrollable(card, theme.SURFACE)
-        body.grid(row=0, column=0, sticky="nsew", padx=(32, 12), pady=(24, 16))
+        body.grid(row=0, column=0, sticky="nsew", padx=(32, 12), pady=(20, 14))
         body.grid_columnconfigure(0, weight=1)
+        self._body_frame = body
+        self.after(60, lambda: self._apply_wraps(self.winfo_width()))
         return body
 
     def _on_resize(self, event):
-        for label, reserve, minimum in self._wrap_labels:
+        self._apply_wraps(event.width)
+
+    def _apply_wraps(self, width):
+        if width <= 1:
+            return
+        for label, reserve, minimum, divisor in self._wrap_labels:
             try:
-                label.configure(wraplength=max(minimum, event.width - reserve))
+                label.configure(wraplength=max(minimum, (width - reserve) // divisor))
             except tk.TclError:
                 pass

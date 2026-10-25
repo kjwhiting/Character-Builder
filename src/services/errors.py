@@ -14,6 +14,18 @@ class InvalidOrderError(ServiceError):
     pass
 
 
+class InvalidColorError(ServiceError):
+    pass
+
+
+class InvalidValueError(ServiceError):
+    pass
+
+
+class TrashItemNotFoundError(ServiceError):
+    pass
+
+
 class EntityNotFoundError(ServiceError):
     pass
 
@@ -26,6 +38,10 @@ class CategoryNotFoundError(ServiceError):
     pass
 
 
+class CollectionNotFoundError(ServiceError):
+    pass
+
+
 class DuplicateCategoryError(ServiceError):
     pass
 
@@ -34,11 +50,11 @@ class DuplicateFieldError(ServiceError):
     pass
 
 
-class CategoryNotEmptyError(ServiceError):
+class DuplicateCollectionError(ServiceError):
     pass
 
 
-class NothingToExportError(ServiceError):
+class CategoryNotEmptyError(ServiceError):
     pass
 
 
@@ -47,4 +63,8 @@ class ProjectExistsError(ServiceError):
 
 
 class ProjectCreationError(ServiceError):
+    pass
+
+
+class InvalidProjectError(ServiceError):
     pass
