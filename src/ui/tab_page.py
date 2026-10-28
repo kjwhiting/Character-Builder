@@ -18,11 +18,13 @@ class TabPage(ctk.CTkFrame):
     def __init__(self, master, connection: sqlite3.Connection, collection: Collection,
                  images_dir: Path, clipboard: ClipboardWriter,
                  on_trash_changed: Callable[[], None] | None = None,
-                 on_terms_changed: Callable[[], None] | None = None):
+                 on_terms_changed: Callable[[], None] | None = None,
+                 on_counts_changed: Callable[["TabPage"], None] | None = None):
         super().__init__(master, corner_radius=0, fg_color=theme.BACKGROUND)
         self.collection = collection
         self._on_trash_changed = on_trash_changed or (lambda: None)
         self._on_terms_changed = on_terms_changed or (lambda: None)
+        self._on_counts_changed = on_counts_changed or (lambda page: None)
         self.entities = EntityService(connection, collection.id)
         self.categories = CategoryService(connection, collection.id)
         self.exporter = ExportService(connection, collection.id, clipboard)
@@ -32,8 +34,9 @@ class TabPage(ctk.CTkFrame):
         self.grid_rowconfigure(0, weight=1)
 
         self.sidebar = SidebarView(
-            self, self.entities, title=collection.label, noun=collection.entry_noun,
-            on_select=self.select_entity, on_add=self.add_entity)
+            self, self.entities, noun=collection.entry_noun,
+            on_select=self.select_entity, on_add=self.add_entity,
+            on_counts_changed=lambda shown, total: self._on_counts_changed(self))
         self.sidebar.grid(row=0, column=0, sticky="ns")
         self.card = CardView(
             self, self.entities, self.categories, self.exporter,
@@ -51,7 +54,7 @@ class TabPage(ctk.CTkFrame):
 
     def update_collection(self, collection: Collection) -> None:
         self.collection = collection
-        self.sidebar.set_texts(collection.label, collection.entry_noun)
+        self.sidebar.set_noun(collection.entry_noun)
         self.card.set_noun(collection.entry_noun)
 
     def select_entity(self, entity_id: int) -> None:

@@ -35,6 +35,19 @@ def make_tabbable(textbox) -> None:
             pass
 
 
+def enable_keyboard_toggle(checkbox) -> None:
+    try:
+        canvas = checkbox._canvas
+        canvas.configure(takefocus=1, highlightthickness=0)
+        canvas.bind("<FocusIn>", lambda _event: canvas.configure(
+            highlightthickness=2, highlightbackground=theme.FOCUS_RING,
+            highlightcolor=theme.FOCUS_RING))
+        canvas.bind("<FocusOut>", lambda _event: canvas.configure(highlightthickness=0))
+        canvas.bind("<space>", lambda _event: (checkbox.toggle(), "break")[1])
+    except (AttributeError, tk.TclError):
+        pass
+
+
 class CheckboxInput(ctk.CTkFrame):
     def __init__(self, master, value: str):
         super().__init__(master, fg_color="transparent", corner_radius=0)
@@ -44,6 +57,7 @@ class CheckboxInput(ctk.CTkFrame):
             text_color=theme.TEXT, fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
             border_color=theme.INPUT_BORDER, checkmark_color=theme.TEXT_ON_ACCENT)
         self.box.pack(anchor="w")
+        enable_keyboard_toggle(self.box)
 
     def set_checked(self, checked: bool) -> None:
         self._var.set(checked)
@@ -75,6 +89,15 @@ class ChoiceInput(ctk.CTkFrame):
         self.combo = theme.styled_combo(self, shown, width=280)
         self.combo.set(value if value else NONE_LABEL)
         self.combo.pack(anchor="w")
+        for key, step in (("<Down>", 1), ("<Up>", -1)):
+            self.combo._entry.bind(key, lambda _event, s=step: self._step(s))
+
+    def _step(self, step):
+        values = list(self.combo.cget("values"))
+        current = self.combo.get()
+        index = values.index(current) if current in values else 0
+        self.combo.set(values[(index + step) % len(values)])
+        return "break"
 
     def set_value(self, value: str) -> None:
         self.combo.set(value if value else NONE_LABEL)
@@ -97,12 +120,13 @@ class MultiChoiceInput(ctk.CTkFrame):
         for index, option in enumerate(options):
             var = tk.BooleanVar(master=self, value=option in selected)
             self._vars[option] = var
-            ctk.CTkCheckBox(
+            box = ctk.CTkCheckBox(
                 self, text=option, variable=var, font=theme.font("body"),
                 text_color=theme.TEXT, fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER,
-                border_color=theme.INPUT_BORDER, checkmark_color=theme.TEXT_ON_ACCENT,
-            ).grid(row=index // CHOICE_COLUMNS, column=index % CHOICE_COLUMNS,
-                   sticky="w", padx=(0, 22), pady=3)
+                border_color=theme.INPUT_BORDER, checkmark_color=theme.TEXT_ON_ACCENT)
+            box.grid(row=index // CHOICE_COLUMNS, column=index % CHOICE_COLUMNS,
+                     sticky="w", padx=(0, 22), pady=3)
+            enable_keyboard_toggle(box)
 
     def set_selected(self, values: list[str]) -> None:
         for option, var in self._vars.items():
@@ -117,7 +141,7 @@ def build_input(parent, field: Field, value: str):
     options = field.options or {}
     if field.field_type in (FIELD_TYPE_TEXTAREA, FIELD_TYPE_LIST):
         widget = theme.styled_textbox(
-            parent, height=130 if field.field_type == FIELD_TYPE_TEXTAREA else 96)
+            parent, height=92 if field.field_type == FIELD_TYPE_TEXTAREA else 70)
         widget.insert("1.0", value)
         make_tabbable(widget)
         return widget

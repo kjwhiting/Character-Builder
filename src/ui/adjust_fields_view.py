@@ -417,12 +417,12 @@ class AdjustFieldsView(ctk.CTkToplevel):
     def _build_row(self, field: Field):
         frame = ctk.CTkFrame(self._list, fg_color=theme.BACKGROUND, border_width=1,
                              border_color=theme.BORDER, corner_radius=0)
-        frame.pack(fill="x", pady=3)
+        frame.pack(fill="x", pady=2)
         frame.grid_columnconfigure(1, weight=1)
 
         handle = tk.Label(frame, text="\u2261", font=(theme.FONT_FAMILY, 20),
                           bg=theme.BACKGROUND, fg=theme.ACCENT, cursor="fleur", padx=10)
-        handle.grid(row=0, column=0, pady=6)
+        handle.grid(row=0, column=0, pady=4)
         handle.bind("<ButtonPress-1>", lambda event, f=field: self._drag_start(event, f, frame, handle))
         handle.bind("<B1-Motion>", self._drag_motion)
         handle.bind("<ButtonRelease-1>", self._drag_end)

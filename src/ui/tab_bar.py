@@ -4,7 +4,7 @@ from typing import Callable
 import customtkinter as ctk
 
 from src.services.collection_service import Collection
-from src.ui import colors, theme
+from src.ui import colors, scrolling, theme
 
 
 class TabBar(ctk.CTkFrame):
@@ -12,7 +12,7 @@ class TabBar(ctk.CTkFrame):
                  on_rename: Callable[[int], None], on_adjust: Callable[[int], None],
                  on_delete: Callable[[int], None], on_trash: Callable[[], None],
                  on_color: Callable[[int], None]):
-        super().__init__(master, corner_radius=0, fg_color=theme.SIDEBAR_BG, height=52)
+        super().__init__(master, corner_radius=0, fg_color=theme.SIDEBAR_BG, height=48)
         self._on_select = on_select
         self._on_add = on_add
         self._on_rename = on_rename
@@ -27,19 +27,19 @@ class TabBar(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_propagate(False)
 
-        self._strip = ctk.CTkScrollableFrame(
+        self._strip = scrolling.SmoothScrollableFrame(
             self, orientation="horizontal", fg_color="transparent", height=40,
             corner_radius=0, scrollbar_fg_color=theme.SIDEBAR_BG,
             scrollbar_button_color=theme.INPUT_BORDER, scrollbar_button_hover_color=theme.GOLD)
-        self._strip.grid(row=0, column=0, sticky="ew", padx=(14, 4), pady=(8, 4))
+        self._strip.grid(row=0, column=0, sticky="ew", padx=(14, 4), pady=(6, 3))
         self.search_entry = theme.styled_entry(
             self, width=250, height=34, placeholder_text="Search all tabs (Ctrl+K)")
-        self.search_entry.grid(row=0, column=1, padx=(8, 10), pady=(8, 4))
+        self.search_entry.grid(row=0, column=1, padx=(8, 10), pady=(6, 3))
         self.add_button = theme.secondary_button(self, "+", self._on_add, width=40, height=34)
-        self.add_button.grid(row=0, column=2, padx=(0, 10), pady=(8, 4))
+        self.add_button.grid(row=0, column=2, padx=(0, 10), pady=(6, 3))
         self.trash_button = theme.secondary_button(
             self, "Trash", self._on_trash, width=100, height=34)
-        self.trash_button.grid(row=0, column=3, padx=(0, 14), pady=(8, 4))
+        self.trash_button.grid(row=0, column=3, padx=(0, 14), pady=(6, 3))
         self.trash_button.grid_remove()
         self._strip.bind("<Configure>", lambda _event: self.after_idle(self._update_scrollbar))
 
@@ -88,7 +88,7 @@ class TabBar(ctk.CTkFrame):
                 command=lambda cid=collection.id: self._on_select(cid))
             button.grid(row=0, column=0)
             for sequence in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
-                button.bind(sequence, lambda event, cid=collection.id: self._popup(event, cid))
+                button.bind(sequence, self._popup_handler(collection.id))
             theme.make_focusable(button)
             self._tabs[collection.id] = button
         self.set_active(active_id)
@@ -130,6 +130,14 @@ class TabBar(ctk.CTkFrame):
         self._menu.add_separator()
         self._menu.add_command(label="Delete Tab...", command=lambda: self._on_delete(collection_id))
         return self._menu
+
+    def _popup_handler(self, collection_id):
+        def handler(event=None):
+            if event is None:
+                return None
+            return self._popup(event, collection_id)
+
+        return handler
 
     def _popup(self, event, collection_id):
         menu = self.build_menu(collection_id)

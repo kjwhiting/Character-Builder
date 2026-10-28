@@ -2,6 +2,8 @@ import tkinter as tk
 
 import customtkinter as ctk
 
+from src.ui import scrolling
+
 PALETTES = {
     "dark": {
         "BACKGROUND": "#151918",
@@ -242,17 +244,23 @@ def styled_combo(parent, values, height=38, **kwargs):
     )
 
 
+class QuietTextbox(ctk.CTkTextbox):
+    def _create_grid_for_text_and_scrollbars(self, re_grid_textbox=False,
+                                              re_grid_x_scrollbar=False,
+                                              re_grid_y_scrollbar=False):
+        self._hide_x_scrollbar = True
+        super()._create_grid_for_text_and_scrollbars(
+            re_grid_textbox, re_grid_x_scrollbar, re_grid_y_scrollbar)
+
+
 def styled_textbox(parent, height=110, **kwargs):
-    box = ctk.CTkTextbox(parent, height=height, font=font("body"), **TEXTBOX_STYLE, **kwargs)
-    try:
-        box._x_scrollbar.grid_remove()
-    except AttributeError:
-        pass
+    box = QuietTextbox(parent, height=height, font=font("body"), **TEXTBOX_STYLE, **kwargs)
+    scrolling.capture_wheel_on(box)
     return box
 
 
 def scrollable(parent, fg_color=SURFACE, **kwargs):
-    return ctk.CTkScrollableFrame(
+    return scrolling.SmoothScrollableFrame(
         parent, fg_color=fg_color, corner_radius=0, scrollbar_fg_color=fg_color,
         scrollbar_button_color=INPUT_BORDER, scrollbar_button_hover_color=GOLD, **kwargs,
     )

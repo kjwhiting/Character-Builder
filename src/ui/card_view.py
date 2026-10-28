@@ -13,9 +13,12 @@ from src.services.errors import EntityNotFoundError, ServiceError
 from src.services.value_format import format_value, split_lines
 from src.services.export_service import ExportService
 from src.ui import field_inputs, theme
-from src.ui.field_layout import is_full_width, plan_layout
+from src.ui.field_layout import SectionGrid, is_full_width
+from src.ui.image_preview import ImagePreview
 from src.ui.new_field_dialog import ask_new_field
 
+HEADER_IMAGE_SIDE = 180
+PREVIEW_IMAGE_SIDE = 720
 IMAGE_FILETYPES = [("Images", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"), ("All files", "*.*")]
 
 
@@ -58,6 +61,14 @@ def _reset_button_text(button, text):
         pass
 
 
+def columns_for_width(width: int) -> int:
+    if width < 640:
+        return 1
+    if width < 900:
+        return 2
+    return 3
+
+
 class CardView(ctk.CTkFrame):
     def __init__(self, master, entities: EntityService, categories: CategoryService,
                  exporter: ExportService, images_dir: Path, noun: str = "Character",
@@ -78,13 +89,18 @@ class CardView(ctk.CTkFrame):
         self._edit_id: int | None = None
         self._editing = False
         self._image_ref = None
-        self._wrap_labels: list[tuple[ctk.CTkLabel, int, int, int]] = []
+        self._wrap_labels: list[tuple[ctk.CTkLabel, int, int, bool]] = []
+        self._grids: list[SectionGrid] = []
+        self._columns = 2
+        self._reflow_job = None
         self._collapsed: set[str] = set()
+        self._form_collapsed: set[str] = set()
+        self._initial_signature: tuple | None = None
+        self._preview_ref = None
         self._field_widgets: dict[int, tuple[tk.Widget, str]] = {}
         self.action_buttons: dict[str, ctk.CTkButton] = {}
         self.name_entry = None
         self.image_entry = None
-        self.aliases_box = None
         self._body_frame = None
 
         self.grid_columnconfigure(0, weight=1)
@@ -146,38 +162,35 @@ class CardView(ctk.CTkFrame):
 
         body = self._body()
         row = 0
-        image = load_image(self._images_dir, entity.image)
+        header = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
+        header.grid(row=row, column=0, sticky="ew", padx=(0, 18), pady=(0, 4))
+        image = load_image(self._images_dir, entity.image, max_side=HEADER_IMAGE_SIDE)
+        text_column = 0
+        reserve = 130
         if image is not None:
             self._image_ref = image
-            mount = ctk.CTkFrame(body, fg_color=theme.BACKGROUND, border_width=2,
+            mount = ctk.CTkFrame(header, fg_color=theme.BACKGROUND, border_width=2,
                                  border_color=theme.GOLD, corner_radius=2)
-            mount.grid(row=row, column=0, sticky="w", pady=(2, 20))
-            ctk.CTkLabel(mount, text="", image=image).pack(padx=6, pady=6)
-            row += 1
-        elif entity.image:
-            ctk.CTkLabel(body, text=f"(image not found: images/{entity.image})",
-                         text_color=theme.TEXT_MUTED, font=theme.font("note")).grid(
-                row=row, column=0, sticky="w", pady=(4, 8))
-            row += 1
-
-        ctk.CTkLabel(body, text=f"  {self._noun}  ", font=theme.font("small"),
+            mount.grid(row=0, column=0, sticky="nw", padx=(0, 20))
+            picture = ctk.CTkLabel(mount, text="", image=image, cursor="hand2")
+            picture.pack(padx=5, pady=5)
+            picture.bind("<Button-1>", lambda _event, e=entity: self.preview_image(e))
+            text_column = 1
+            reserve += HEADER_IMAGE_SIDE + 40
+        header.grid_columnconfigure(text_column, weight=1)
+        text = ctk.CTkFrame(header, fg_color="transparent", corner_radius=0)
+        text.grid(row=0, column=text_column, sticky="w")
+        ctk.CTkLabel(text, text=f"  {self._noun}  ", font=theme.font("small"),
                      text_color=theme.TEXT, fg_color=theme.SELECTION_BG,
-                     corner_radius=10, height=22).grid(row=row, column=0, sticky="w", pady=(0, 8))
-        row += 1
-        title = ctk.CTkLabel(body, text=entity.name, font=theme.font("title"),
+                     corner_radius=10, height=22).pack(anchor="w", pady=(2, 6))
+        title = ctk.CTkLabel(text, text=entity.name, font=theme.font("title"),
                              text_color=theme.TEXT, anchor="w", justify="left", wraplength=640)
-        title.grid(row=row, column=0, sticky="w")
-        self._wrap_labels.append((title, 130, 230, 1))
-        row += 1
-        aliases = self._entities.get_aliases(entity_id)
-        if aliases:
-            alias_label = ctk.CTkLabel(
-                body, text="Also known as: " + ", ".join(aliases), font=theme.font("note"),
-                text_color=theme.TEXT_MUTED, anchor="w", justify="left", wraplength=640)
-            alias_label.grid(row=row, column=0, sticky="w", pady=(2, 0))
-            self._wrap_labels.append((alias_label, 130, 230, 1))
-            row += 1
-        theme.ornament(body).grid(row=row, column=0, sticky="ew", pady=(10, 2), padx=(0, 18))
+        title.pack(anchor="w")
+        self._wrap_labels.append((title, reserve, 230, False))
+        if entity.image and image is None:
+            ctk.CTkLabel(text, text=f"(image not found: images/{entity.image})",
+                         text_color=theme.TEXT_MUTED, font=theme.font("note")).pack(
+                anchor="w", pady=(6, 0))
         row += 1
 
         self._show_sections(body, row, entity_id)
@@ -189,12 +202,11 @@ class CardView(ctk.CTkFrame):
         self._build_form(
             self._entity_id,
             {"name": entity.name, "image": entity.image,
-             "aliases": self._entities.get_aliases(entity.id),
              "values": self._entities.get_values(entity.id)},
         )
 
     def start_new(self) -> None:
-        self._build_form(None, {"name": "", "image": "", "aliases": [], "values": {}})
+        self._build_form(None, {"name": "", "image": "", "values": {}})
 
     def collect_form(self) -> dict:
         values = {}
@@ -203,8 +215,6 @@ class CardView(ctk.CTkFrame):
         return {
             "name": self.name_entry.get().strip(),
             "image": self.image_entry.get().strip(),
-            "aliases": [line.strip() for line in
-                        self.aliases_box.get("1.0", "end-1c").splitlines() if line.strip()],
             "values": values,
         }
 
@@ -215,11 +225,11 @@ class CardView(ctk.CTkFrame):
         try:
             if self._edit_id is None:
                 entity_id = self._entities.create_entity(
-                    data["name"], data["image"], data["values"], data["aliases"])
+                    data["name"], data["image"], data["values"])
             else:
                 entity_id = self._edit_id
                 self._entities.update_entity(
-                    entity_id, data["name"], data["image"], data["values"], data["aliases"])
+                    entity_id, data["name"], data["image"], data["values"])
         except ServiceError as exc:
             messagebox.showwarning("Can't save", str(exc), parent=self)
             self.name_entry.focus_set()
@@ -291,58 +301,61 @@ class CardView(ctk.CTkFrame):
     def _show_sections(self, body, row, entity_id):
         values = self._entities.get_values(entity_id)
         groups: dict[str, list] = {}
-        for field in self._categories.list_fields():
+        all_fields = self._categories.list_fields()
+        for field in all_fields:
             value = (values.get(field.id) or "").strip()
             if value or field.show_empty:
                 groups.setdefault(field.category, []).append((field, value))
         if not groups:
-            ctk.CTkLabel(body, text="No details yet. Press Edit to add some.",
+            hint = ("No details yet. Press Edit to add some." if all_fields else
+                    f"This tab has no fields yet. Use + Add field to choose what to track "
+                    f"for each {self._noun.lower()}.")
+            ctk.CTkLabel(body, text=hint, justify="left", wraplength=560, anchor="w",
                          text_color=theme.TEXT_MUTED, font=theme.font("note")).grid(
                 row=row, column=0, sticky="w", pady=(18, 6))
             row += 1
         for category, items in groups.items():
             row = self._add_section(
-                body, row, category, lambda section, items=items: self._fill_view(section, items))
+                body, row, category, lambda section, items=items: self._fill_view(section, items),
+                self._collapsed)
         self._add_field_button(body, row)
 
-    def _add_section(self, body, row, category, fill):
+    def _add_section(self, body, row, category, fill, collapsed):
         section = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
-        section.grid_columnconfigure(0, weight=1, uniform="cells")
-        section.grid_columnconfigure(1, weight=1, uniform="cells")
+        grid = SectionGrid(section)
+        self._grids.append(grid)
         header = theme.section_header(
-            body, category, collapsed=category in self._collapsed,
-            on_toggle=lambda: self._toggle_section(category, header, section))
-        header.grid(row=row, column=0, sticky="ew", pady=(20, 6), padx=(0, 18))
+            body, category, collapsed=category in collapsed,
+            on_toggle=lambda: self._toggle_section(collapsed, category, header, section))
+        header.grid(row=row, column=0, sticky="ew", pady=(14, 4), padx=(0, 18))
         section.grid(row=row + 1, column=0, sticky="ew", padx=(0, 18))
-        if category in self._collapsed:
+        if category in collapsed:
             section.grid_remove()
-        fill(section)
+        fill(grid)
+        grid.reflow(self._columns)
         return row + 2
 
-    def _toggle_section(self, category, header, section):
-        if category in self._collapsed:
-            self._collapsed.discard(category)
+    def _toggle_section(self, collapsed, category, header, section):
+        if category in collapsed:
+            collapsed.discard(category)
             section.grid()
             header.marker_label.configure(text="\u25BE")
         else:
-            self._collapsed.add(category)
+            collapsed.add(category)
             section.grid_remove()
             header.marker_label.configure(text="\u25B8")
 
     def _add_field_button(self, body, row):
-        theme.secondary_button(body, "+ Add field", self.add_field, width=140).grid(
-            row=row, column=0, sticky="w", pady=(26, 10))
+        theme.secondary_button(body, "+ Add field", self.add_field, width=140, height=34).grid(
+            row=row, column=0, sticky="w", pady=(18, 6))
 
-    def _fill_view(self, section, items):
-        widths = [is_full_width(field.field_type, field.full_width) for field, _ in items]
-        for index, grid_row, column, span in plan_layout(widths):
-            field, value = items[index]
-            self._view_cell(section, field, value, grid_row, column, span)
+    def _fill_view(self, grid, items):
+        for field, value in items:
+            full = is_full_width(field.field_type, field.full_width)
+            grid.add(self._view_cell(grid.frame, field, value, full), full)
 
-    def _view_cell(self, section, field, value, grid_row, column, span):
+    def _view_cell(self, section, field, value, full):
         cell = ctk.CTkFrame(section, fg_color="transparent", corner_radius=0)
-        cell.grid(row=grid_row, column=column, columnspan=span, sticky="ew", pady=5,
-                  padx=(0, 18) if column == 0 and span == 1 else (0, 0))
         ctk.CTkLabel(cell, text=field.name, font=theme.font("label"),
                      text_color=theme.TEXT_MUTED, anchor="w").pack(anchor="w")
         if field.field_type == "list":
@@ -356,7 +369,14 @@ class CardView(ctk.CTkFrame):
             text_color=theme.TEXT_MUTED if empty else theme.TEXT,
             anchor="w", justify="left", wraplength=300)
         label.pack(anchor="w", fill="x")
-        self._wrap_labels.append((label, 150 if span == 2 else 190, 140, 1 if span == 2 else 2))
+        self._wrap_labels.append((label, 150 if full else 190, 140, not full))
+        return cell
+
+    def preview_image(self, entity) -> None:
+        large = load_image(self._images_dir, entity.image, max_side=PREVIEW_IMAGE_SIDE)
+        if large is not None:
+            self._preview_ref = large
+            ImagePreview(self, large, entity.name)
 
     def add_field(self) -> None:
         result = ask_new_field(self, self._categories)
@@ -378,9 +398,10 @@ class CardView(ctk.CTkFrame):
             messagebox.showwarning("Can't add field", str(exc), parent=self)
             return
         self._collapsed.discard(result["category"])
+        self._form_collapsed.discard(result["category"])
         if self._editing:
             preset = self.collect_form()
-            self._build_form(self._edit_id, preset)
+            self._build_form(self._edit_id, preset, keep_state=True)
         elif self._entity_id is not None:
             self.show_entity(self._entity_id)
         self.after(120, self._scroll_to_bottom)
@@ -391,80 +412,116 @@ class CardView(ctk.CTkFrame):
         except (AttributeError, tk.TclError):
             pass
 
-    def _build_form(self, entity_id, preset):
+    def _build_form(self, entity_id, preset, keep_state=False):
         self._editing = True
         self._edit_id = entity_id
         self._clear()
+        if not keep_state:
+            self._form_collapsed = self._initial_collapsed(entity_id, preset)
 
         bar = self._topbar()
         theme.primary_button(bar, "Save", self.save).pack(side="left")
-        theme.secondary_button(bar, "Cancel", self.cancel).pack(side="left", padx=10)
+        theme.secondary_button(bar, "Cancel", self.request_cancel).pack(side="left", padx=10)
+        ctk.CTkLabel(
+            bar, text=f"New {self._noun.lower()}" if entity_id is None else "Editing",
+            font=theme.font("note"), text_color=theme.TEXT_MUTED).pack(side="left", padx=(14, 0))
         if entity_id is not None:
             theme.secondary_button(bar, "Delete", self.delete, danger=True).pack(side="right")
 
         body = self._body()
         row = 0
-        heading = f"New {self._noun}" if entity_id is None else "Edit"
-        ctk.CTkLabel(body, text=heading, font=theme.font("heading"), text_color=theme.TEXT,
-                     anchor="w").grid(row=row, column=0, sticky="w", pady=(2, 4))
-        row += 1
-        theme.ornament(body).grid(row=row, column=0, sticky="ew", padx=(0, 18), pady=(0, 6))
-        row += 1
-
-        row = self._form_label(body, row, "Name", top=8)
-        self.name_entry = theme.styled_entry(body)
+        top = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
+        top.grid(row=row, column=0, sticky="ew", padx=(0, 18))
+        top.grid_columnconfigure(0, weight=3, uniform="top")
+        top.grid_columnconfigure(1, weight=2, uniform="top")
+        name_cell = ctk.CTkFrame(top, fg_color="transparent", corner_radius=0)
+        name_cell.grid(row=0, column=0, sticky="ew", padx=(0, 18))
+        self._cell_label(name_cell, "Name")
+        self.name_entry = theme.styled_entry(name_cell)
         self.name_entry.insert(0, preset["name"])
-        self.name_entry.grid(row=row, column=0, sticky="ew", padx=(0, 18))
-        row += 1
-
-        row = self._form_label(body, row, "Also known as  (one per line)", top=10)
-        self.aliases_box = theme.styled_textbox(body, height=64)
-        self.aliases_box.insert("1.0", "\n".join(preset.get("aliases", [])))
-        field_inputs.make_tabbable(self.aliases_box)
-        self.aliases_box.grid(row=row, column=0, sticky="ew", padx=(0, 18))
-        row += 1
-
-        row = self._form_label(body, row, "Image filename (in ./images/)", top=10)
-        image_row = ctk.CTkFrame(body, fg_color="transparent", corner_radius=0)
-        image_row.grid(row=row, column=0, sticky="ew", padx=(0, 18))
+        self.name_entry.pack(fill="x")
+        image_cell = ctk.CTkFrame(top, fg_color="transparent", corner_radius=0)
+        image_cell.grid(row=0, column=1, sticky="ew")
+        self._cell_label(image_cell, "Image  (in ./images/)")
+        image_row = ctk.CTkFrame(image_cell, fg_color="transparent", corner_radius=0)
+        image_row.pack(fill="x")
         image_row.grid_columnconfigure(0, weight=1)
         self.image_entry = theme.styled_entry(image_row, placeholder_text="hero.png")
         self.image_entry.insert(0, preset["image"])
         self.image_entry.grid(row=0, column=0, sticky="ew")
-        theme.secondary_button(image_row, "Browse...", self.browse_image, width=110).grid(
-            row=0, column=1, padx=(10, 0))
+        theme.secondary_button(image_row, "Browse...", self.browse_image, width=96).grid(
+            row=0, column=1, padx=(8, 0))
         row += 1
 
         by_category: dict[str, list] = {}
         for field in self._categories.list_fields():
             by_category.setdefault(field.category, []).append(field)
+        if not by_category:
+            ctk.CTkLabel(
+                body, text=f"No fields yet. Add the ones you want to track for each "
+                           f"{self._noun.lower()} below.",
+                font=theme.font("note"), text_color=theme.TEXT_MUTED, anchor="w",
+                justify="left", wraplength=560,
+            ).grid(row=row, column=0, sticky="w", pady=(18, 0))
+            row += 1
         for category, fields in by_category.items():
             row = self._add_section(
                 body, row, category,
-                lambda section, fields=fields: self._fill_form(section, fields, preset))
+                lambda grid, fields=fields: self._fill_form(grid, fields, preset),
+                self._form_collapsed)
         self._add_field_button(body, row)
 
+        if not keep_state:
+            self._initial_signature = self._signature(self.collect_form())
         self.after(50, self._focus_name)
 
-    def _fill_form(self, section, fields, preset):
-        widths = [is_full_width(field.field_type, field.full_width) for field in fields]
-        for index, grid_row, column, span in plan_layout(widths):
-            field = fields[index]
-            cell = ctk.CTkFrame(section, fg_color="transparent", corner_radius=0)
-            cell.grid(row=grid_row, column=column, columnspan=span, sticky="ew", pady=5,
-                      padx=(0, 18) if column == 0 and span == 1 else (0, 0))
-            ctk.CTkLabel(cell, text=field.name + field_inputs.field_hint(field),
-                         font=theme.font("label"), text_color=theme.TEXT_MUTED,
-                         anchor="w").pack(anchor="w", pady=(0, 3))
+    @staticmethod
+    def _cell_label(parent, text, suffix=""):
+        ctk.CTkLabel(parent, text=text + suffix, font=theme.font("label"),
+                     text_color=theme.TEXT_MUTED, anchor="w").pack(anchor="w", pady=(0, 3))
+
+    def _initial_collapsed(self, entity_id, preset):
+        if entity_id is None:
+            return set()
+        filled = {fid for fid, value in preset["values"].items() if (value or "").strip()}
+        collapsed = set()
+        for category in self._categories.list_categories():
+            fields = self._categories.list_fields(category)
+            if fields and not any(f.id in filled for f in fields):
+                collapsed.add(category)
+        return collapsed
+
+    @staticmethod
+    def _signature(data):
+        values = tuple(sorted((fid, v.strip()) for fid, v in data["values"].items() if v.strip()))
+        return (data["name"].strip(), data["image"].strip(), values)
+
+    @property
+    def is_dirty(self) -> bool:
+        if not self._editing or self._initial_signature is None:
+            return False
+        return self._signature(self.collect_form()) != self._initial_signature
+
+    def request_cancel(self) -> bool:
+        if not self._editing:
+            return True
+        if self.is_dirty:
+            confirmed = messagebox.askyesno(
+                "Discard changes?", "You have unsaved changes. Discard them?", parent=self)
+            if not confirmed:
+                return False
+        self.cancel()
+        return True
+
+    def _fill_form(self, grid, fields, preset):
+        for field in fields:
+            cell = ctk.CTkFrame(grid.frame, fg_color="transparent", corner_radius=0)
+            self._cell_label(cell, field.name, field_inputs.field_hint(field))
             widget = field_inputs.build_input(cell, field, preset["values"].get(field.id, "") or "")
             stretch = isinstance(widget, (ctk.CTkTextbox, ctk.CTkEntry))
             widget.pack(fill="x" if stretch else None, anchor="w")
             self._field_widgets[field.id] = (widget, field.field_type)
-
-    def _form_label(self, parent, row, text, top):
-        ctk.CTkLabel(parent, text=text, font=theme.font("label"), text_color=theme.TEXT_MUTED,
-                     anchor="w").grid(row=row, column=0, sticky="w", pady=(top, 3))
-        return row + 1
+            grid.add(cell, is_full_width(field.field_type, field.full_width))
 
     def _focus_name(self):
         try:
@@ -476,36 +533,54 @@ class CardView(ctk.CTkFrame):
         for child in self.winfo_children():
             child.destroy()
         self._wrap_labels = []
+        self._grids = []
         self._field_widgets = {}
         self.action_buttons = {}
         self.name_entry = None
         self.image_entry = None
-        self.aliases_box = None
 
     def _topbar(self):
         bar = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
-        bar.grid(row=0, column=0, sticky="ew", padx=30, pady=(28, 12))
+        bar.grid(row=0, column=0, sticky="ew", padx=24, pady=(16, 8))
         return bar
 
     def _body(self):
         card = ctk.CTkFrame(self, **theme.CARD_STYLE)
-        card.grid(row=1, column=0, sticky="nsew", padx=30, pady=(0, 30))
+        card.grid(row=1, column=0, sticky="nsew", padx=24, pady=(0, 16))
         card.grid_rowconfigure(0, weight=1)
         card.grid_columnconfigure(0, weight=1)
         body = theme.scrollable(card, theme.SURFACE)
-        body.grid(row=0, column=0, sticky="nsew", padx=(32, 12), pady=(20, 14))
+        body.grid(row=0, column=0, sticky="nsew", padx=(26, 10), pady=(14, 10))
         body.grid_columnconfigure(0, weight=1)
         self._body_frame = body
+        if self.winfo_width() > 1:
+            self._columns = columns_for_width(self.winfo_width())
         self.after(60, lambda: self._apply_wraps(self.winfo_width()))
         return body
 
     def _on_resize(self, event):
         self._apply_wraps(event.width)
+        columns = columns_for_width(event.width)
+        if columns != self._columns:
+            if self._reflow_job is not None:
+                self.after_cancel(self._reflow_job)
+            self._reflow_job = self.after(80, lambda: self._reflow(columns))
+
+    def _reflow(self, columns):
+        self._reflow_job = None
+        self._columns = columns
+        for grid in self._grids:
+            try:
+                grid.reflow(columns)
+            except tk.TclError:
+                pass
+        self._apply_wraps(self.winfo_width())
 
     def _apply_wraps(self, width):
         if width <= 1:
             return
-        for label, reserve, minimum, divisor in self._wrap_labels:
+        for label, reserve, minimum, half in self._wrap_labels:
+            divisor = self._columns if half else 1
             try:
                 label.configure(wraplength=max(minimum, (width - reserve) // divisor))
             except tk.TclError:

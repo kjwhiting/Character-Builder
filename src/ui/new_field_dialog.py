@@ -74,6 +74,8 @@ class NewFieldDialog(ctk.CTkToplevel):
         self.unit_entry = theme.styled_entry(self.options_holder, width=436,
                                              placeholder_text="cm, kg, years")
 
+        if not self._sections:
+            self.new_section_entry.insert(0, "Details")
         self._on_section(self.section_box.get())
         self._on_type(self.type_box.get())
         self.after(150, self._finish_setup)

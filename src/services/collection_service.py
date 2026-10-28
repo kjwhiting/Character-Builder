@@ -59,12 +59,13 @@ class CollectionService:
             raise CollectionNotFoundError(f"Tab {collection_id} does not exist.")
         return Collection(*row)
 
-    def add_collection(self, label: str, entry_noun: str, template_key: str = "blank") -> Collection:
+    def add_collection(self, label: str, entry_noun: str, template_key: str = "blank",
+                       color: str | None = None) -> Collection:
         template = get_template(template_key)
-        return self.add_from_template(template, label=label, entry_noun=entry_noun)
+        return self.add_from_template(template, label=label, entry_noun=entry_noun, color=color)
 
     def add_from_template(self, template: Template, label: str | None = None,
-                          entry_noun: str | None = None) -> Collection:
+                          entry_noun: str | None = None, color: str | None = None) -> Collection:
         cleaned_label = _clean(label if label is not None else template["label"], "Tab name")
         cleaned_noun = _clean(
             entry_noun if entry_noun is not None else template["entry_noun"], "Entry name")
@@ -76,7 +77,7 @@ class CollectionService:
             collection_id = self._conn.execute(
                 "INSERT INTO collections (key, label, entry_noun, color, sort_order) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (key, cleaned_label, cleaned_noun, template.get("color"),
+                (key, cleaned_label, cleaned_noun, color or template.get("color"),
                  0 if top is None else top + 1),
             ).lastrowid
             for category_order, category in enumerate(template["categories"]):

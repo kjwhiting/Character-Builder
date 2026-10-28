@@ -11,12 +11,13 @@ from src.services.export_service import TkClipboard
 from src.services.project_service import Project, ProjectService, remember_project
 from src.services.term_index import TermIndex
 from src.services.trash_service import RETENTION_DAYS, TrashService
-from src.ui import theme
+from src.ui import colors, scrolling, theme
 from src.ui.adjust_fields_view import AdjustFieldsView, ask_name
 from src.ui.color_dialog import ask_color
 from src.ui.global_search import GlobalSearch
 from src.ui.new_tab_dialog import ask_new_tab
 from src.ui.tab_bar import TabBar
+from src.ui.status_bar import StatusBar
 from src.ui.tab_page import TabPage
 from src.ui.trash_dialog import TrashDialog
 
@@ -60,6 +61,7 @@ class AppWindow(ctk.CTk):
         self.terms: TermIndex | None = None
         self.global_search: GlobalSearch | None = None
         self.tab_bar: TabBar | None = None
+        self.status_bar: StatusBar | None = None
         self._content: ctk.CTkFrame | None = None
         self._empty_label: ctk.CTkLabel | None = None
 
@@ -69,6 +71,7 @@ class AppWindow(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
+        scrolling.install(self)
         self._build_menu()
         self._build_chrome()
         self._load_project_views()
@@ -126,7 +129,8 @@ class AppWindow(ctk.CTk):
             page = TabPage(
                 self._content, self._db.connection, collection, self._project.images_dir,
                 TkClipboard(self), on_trash_changed=self._update_trash_count,
-                on_terms_changed=self.refresh_terms)
+                on_terms_changed=self.refresh_terms,
+                on_counts_changed=self._page_counts_changed)
             page.grid(row=0, column=0, sticky="nsew")
             page.grid_remove()
             self._pages[collection_id] = page
@@ -172,9 +176,11 @@ class AppWindow(ctk.CTk):
         answer = ask_new_tab(self, taken=[c.label for c in self._collections.list_collections()])
         if not answer:
             return
-        label, noun, template_key = answer
+        label, noun = answer
+        palette = colors.PRESET_COLORS
+        color = palette[len(self._collections.list_collections()) % len(palette)]
         try:
-            created = self._collections.add_collection(label, noun, template_key)
+            created = self._collections.add_collection(label, noun, color=color)
         except ServiceError as exc:
             messagebox.showerror("Can't add tab", str(exc), parent=self)
             return
@@ -197,6 +203,7 @@ class AppWindow(ctk.CTk):
             self._pages[collection_id].update_collection(renamed)
         self._refresh_tab_bar(self._active_id)
         self.refresh_terms()
+        self._update_status()
 
     def delete_tab(self, collection_id: int) -> None:
         collection = self._collections.get_collection(collection_id)
@@ -374,7 +381,7 @@ class AppWindow(ctk.CTk):
                 if menu.type(position) in ("command", "radiobutton")]
 
     def _build_chrome(self) -> None:
-        for widget in (self.tab_bar, self._content):
+        for widget in (self.tab_bar, self._content, self.status_bar):
             if widget is not None:
                 widget.destroy()
         self._pages = {}
@@ -394,8 +401,27 @@ class AppWindow(ctk.CTk):
             self._content, text="No tabs yet.\nClick + above to add one.",
             font=theme.font("placeholder"), text_color=theme.TEXT_MUTED, justify="center")
         self._empty_label.grid(row=0, column=0)
+        self.status_bar = StatusBar(self)
+        self.status_bar.grid(row=2, column=0, sticky="ew")
+
+    def _save_shortcut(self, _event=None):
+        page = self.active_page
+        if page is not None and page.editing:
+            page.card.save()
+            return "break"
+        return None
+
+    def _escape_shortcut(self, _event=None):
+        page = self.active_page
+        if page is not None and page.editing:
+            page.card.request_cancel()
+            return "break"
+        return None
 
     def _bind_tab_keys(self) -> None:
+        for sequence in ("<Control-s>", "<Control-S>"):
+            self.bind(sequence, self._save_shortcut)
+        self.bind("<Escape>", self._escape_shortcut)
         for sequence in ("<Control-k>", "<Control-K>"):
             self.bind(sequence, lambda _event: (self.focus_search(), "break")[1])
         self.bind("<Control-Tab>", lambda _event: (self.next_tab(1), "break")[1])
@@ -447,9 +473,23 @@ class AppWindow(ctk.CTk):
         self.tab_bar.set_active(collection_id)
         if collection_id is None:
             self._empty_label.grid()
+            self._update_status()
             return
         self._empty_label.grid_remove()
         self.page_for(collection_id).grid()
+        self._update_status()
+
+    def _page_counts_changed(self, page: TabPage) -> None:
+        if page is self.active_page:
+            self._update_status()
+
+    def _update_status(self) -> None:
+        page = self.active_page
+        if page is None:
+            self.status_bar.show_entries(None)
+            return
+        self.status_bar.show_entries(
+            page.collection.label, page.sidebar.shown_count, page.sidebar.total_count)
 
     def _confirm_discard_all(self) -> bool:
         if not any(page.editing for page in self._pages.values()):

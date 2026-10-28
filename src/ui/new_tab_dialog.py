@@ -3,7 +3,6 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
-from src.database.seeds import TEMPLATES
 from src.ui import theme
 
 
@@ -22,7 +21,6 @@ class NewTabDialog(ctk.CTkToplevel):
         self.result = None
         self._noun_touched = False
         self._taken = {name.strip().lower() for name in taken}
-        self._templates = {t["label"]: key for key, t in TEMPLATES.items()}
 
         self.title("Add Tab")
         self.resizable(False, False)
@@ -47,11 +45,6 @@ class NewTabDialog(ctk.CTkToplevel):
         self.noun_entry.pack(padx=32)
         self.noun_entry.bind("<KeyRelease>", self._mark_noun_touched)
         self.noun_entry.bind("<Return>", lambda _event: self.ok())
-
-        self._label("Start from")
-        self.template_box = theme.styled_combo(self, list(self._templates), width=436)
-        self.template_box.set("Blank")
-        self.template_box.pack(padx=32)
 
         row = ctk.CTkFrame(self, fg_color="transparent")
         row.pack(fill="x", padx=32, pady=26)
@@ -105,7 +98,7 @@ class NewTabDialog(ctk.CTkToplevel):
         if self.is_taken(label):
             self._on_name_typed()
             return
-        self.result = (label, noun, self._templates[self.template_box.get()])
+        self.result = (label, noun)
         self.destroy()
 
 
