@@ -1,201 +1,186 @@
-import sqlite3
+from pathlib import Path
 
 import pytest
 
-from src.services.errors import InvalidNameError, ProjectCreationError, ProjectExistsError
-from src.services.project_service import (
-    DEFAULT_PROFILES,
-    ProfileSpec,
-    ProjectService,
-    make_initializer,
+from src.database.connection import ProjectDatabase
+from src.services.category_service import CategoryService
+from src.services.collection_service import CollectionService
+from src.services.errors import (
+    InvalidNameError,
+    InvalidProjectError,
+    ProjectCreationError,
+    ProjectExistsError,
 )
-
-
-def sqlite_initializer(db_path, profile):
-    connection = sqlite3.connect(str(db_path))
-    try:
-        with connection:
-            connection.execute("CREATE TABLE profile (label TEXT)")
-            connection.execute("INSERT INTO profile VALUES (?)", (profile.label,))
-    finally:
-        connection.close()
+from src.services.project_service import (
+    DEFAULT_PROJECT_NAME,
+    IMAGES_DIRNAME,
+    LAST_PROJECT_FILE_NAME,
+    PROJECT_DB_NAME,
+    ProjectService,
+    recall_project,
+    remember_project,
+)
 
 
 @pytest.fixture
 def service():
-    return ProjectService(sqlite_initializer)
+    return ProjectService()
 
 
-def test_creates_project_folder_with_images_subfolder(service, tmp_path):
-    project = service.create_project(tmp_path, "My Saga")
+class TestCreatingAProject:
+    def test_a_project_is_a_folder_with_a_database_and_an_images_folder(self, service, tmp_path):
+        project = service.create_project(tmp_path, "Saga")
 
-    assert project.root == tmp_path / "My Saga"
-    assert project.root.is_dir()
-    assert project.images_dir == project.root / "images"
-    assert project.images_dir.is_dir()
+        assert project.root == (tmp_path / "Saga").resolve()
+        assert (project.root / PROJECT_DB_NAME).is_file()
+        assert (project.root / IMAGES_DIRNAME).is_dir()
+        assert project.db_path == project.root / PROJECT_DB_NAME
+        assert project.images_dir == project.root / IMAGES_DIRNAME
 
+    def test_the_project_takes_its_name_from_the_folder(self, service, tmp_path):
+        assert service.create_project(tmp_path, "Saga").name == "Saga"
 
-def test_creates_and_seeds_one_database_per_default_profile(service, tmp_path):
-    project = service.create_project(tmp_path, "My Saga")
+    def test_the_name_is_trimmed(self, service, tmp_path):
+        service.create_project(tmp_path, "  Saga  ")
 
-    assert set(project.databases) == {profile.label for profile in DEFAULT_PROFILES}
-    for profile in DEFAULT_PROFILES:
-        path = project.databases[profile.label]
-        assert path == project.root / profile.filename
-        connection = sqlite3.connect(str(path))
-        try:
-            assert connection.execute("SELECT label FROM profile").fetchone() == (profile.label,)
-        finally:
-            connection.close()
+        assert (tmp_path / "Saga").is_dir()
 
+    def test_it_starts_with_six_tabs_in_a_fixed_order(self, service, tmp_path):
+        project = service.create_project(tmp_path, "Saga")
 
-def test_initializer_receives_each_profile_in_order(tmp_path):
-    received = []
+        with ProjectDatabase() as database:
+            database.open(project.db_path)
+            tabs = CollectionService(database.connection).list_collections()
 
-    def recording(db_path, profile):
-        received.append((db_path.name, profile.label))
-        db_path.touch()
+        assert [t.label for t in tabs] == [
+            "Characters", "Magic", "Places", "Items", "Events", "Dictionary"]
+        assert [t.entry_noun for t in tabs] == [
+            "Character", "Spell", "Place", "Item", "Event", "Word"]
 
-    ProjectService(recording).create_project(tmp_path, "Saga")
+    def test_every_starter_tab_has_its_own_colour(self, service, tmp_path):
+        project = service.create_project(tmp_path, "Saga")
 
-    assert received == [("Characters.sqlite", "Characters"), ("Worldbuilding.sqlite", "Worldbuilding")]
+        with ProjectDatabase() as database:
+            database.open(project.db_path)
+            tabs = CollectionService(database.connection).list_collections()
 
+        assert len({t.color for t in tabs}) == 6
 
-def test_custom_profiles_replace_the_defaults(tmp_path):
-    profiles = [ProfileSpec("Factions", "factions.sqlite")]
+    def test_starter_tabs_have_no_fields_for_the_creator_to_decide(self, service, tmp_path):
+        project = service.create_project(tmp_path, "Saga")
 
-    project = ProjectService(sqlite_initializer, profiles).create_project(tmp_path, "Saga")
+        with ProjectDatabase() as database:
+            database.open(project.db_path)
+            tab = CollectionService(database.connection).list_collections()[0]
 
-    assert list(project.databases) == ["Factions"]
-    assert sorted(p.name for p in project.root.iterdir()) == ["factions.sqlite", "images"]
+            assert CategoryService(database.connection, tab.id).list_fields() == []
 
-
-def test_project_name_is_trimmed(service, tmp_path):
-    project = service.create_project(tmp_path, "  Saga  ")
-
-    assert project.name == "Saga"
-    assert (tmp_path / "Saga").is_dir()
-
-
-def test_existing_folder_is_never_touched(service, tmp_path):
-    existing = tmp_path / "Saga"
-    existing.mkdir()
-    (existing / "notes.txt").write_text("keep me")
-
-    with pytest.raises(ProjectExistsError):
-        service.create_project(tmp_path, "Saga")
-
-    assert [p.name for p in existing.iterdir()] == ["notes.txt"]
+    def test_the_default_project_name_is_my_world(self):
+        assert DEFAULT_PROJECT_NAME == "My World"
 
 
-def test_existing_file_with_same_name_blocks_creation(service, tmp_path):
-    (tmp_path / "Saga").write_text("a file")
+class TestRefusingBadRequests:
+    @pytest.mark.parametrize("name", [
+        "", "   ", ".", "..", "ends.", "bad/name", "bad\\name", "what?", "a:b", 'q"q', "a*b",
+        "a<b", "a>b", "a|b", "tab\tname"])
+    def test_names_a_folder_cannot_have_are_rejected_before_anything_is_created(
+        self, service, tmp_path, name
+    ):
+        with pytest.raises(InvalidNameError):
+            service.create_project(tmp_path, name)
 
-    with pytest.raises(ProjectExistsError):
-        service.create_project(tmp_path, "Saga")
+        assert list(tmp_path.iterdir()) == []
 
-    assert (tmp_path / "Saga").read_text() == "a file"
+    def test_an_existing_folder_is_never_touched(self, service, tmp_path):
+        existing = tmp_path / "Saga"
+        existing.mkdir()
+        (existing / "notes.txt").write_text("keep me")
 
+        with pytest.raises(ProjectExistsError):
+            service.create_project(tmp_path, "Saga")
 
-@pytest.mark.parametrize(
-    "name", ["", "   ", ".", "..", "bad/name", "bad\\name", "what?", "a:b", "ends.", 'q"q', "a*b"]
-)
-def test_invalid_names_are_rejected_before_anything_is_created(service, tmp_path, name):
-    with pytest.raises(InvalidNameError):
-        service.create_project(tmp_path, name)
+        assert [p.name for p in existing.iterdir()] == ["notes.txt"]
 
-    assert list(tmp_path.iterdir()) == []
+    def test_an_existing_file_with_that_name_blocks_creation(self, service, tmp_path):
+        (tmp_path / "Saga").write_text("a file")
 
+        with pytest.raises(ProjectExistsError):
+            service.create_project(tmp_path, "Saga")
 
-def test_missing_parent_folder_is_reported(service, tmp_path):
-    with pytest.raises(ProjectCreationError):
-        service.create_project(tmp_path / "nowhere", "Saga")
+        assert (tmp_path / "Saga").read_text() == "a file"
 
-    assert list(tmp_path.iterdir()) == []
+    def test_a_missing_parent_folder_is_reported(self, service, tmp_path):
+        with pytest.raises(ProjectCreationError, match="does not exist"):
+            service.create_project(tmp_path / "nowhere", "Saga")
 
+    def test_a_folder_that_cannot_be_made_is_reported(self, service, tmp_path, monkeypatch):
+        def refuse(self, *args, **kwargs):
+            raise PermissionError("read-only")
 
-def test_failed_seeding_removes_the_partial_project(tmp_path):
-    def failing_on_second(db_path, profile):
-        if profile.label == "Worldbuilding":
-            raise sqlite3.OperationalError("disk full")
-        db_path.touch()
+        monkeypatch.setattr(Path, "mkdir", refuse)
 
-    service = ProjectService(failing_on_second)
+        with pytest.raises(ProjectCreationError, match="Could not create project folder"):
+            service.create_project(tmp_path, "Saga")
 
-    with pytest.raises(ProjectCreationError) as caught:
-        service.create_project(tmp_path, "Saga")
+    def test_a_failure_halfway_removes_the_partial_project(self, service, tmp_path, monkeypatch):
+        def explode(self, *args, **kwargs):
+            raise RuntimeError("disk full")
 
-    assert isinstance(caught.value.__cause__, sqlite3.OperationalError)
-    assert not (tmp_path / "Saga").exists()
+        monkeypatch.setattr(CollectionService, "add_from_template", explode)
 
+        with pytest.raises(ProjectCreationError, match="disk full"):
+            service.create_project(tmp_path, "Saga")
 
-def test_service_requires_at_least_one_profile():
-    with pytest.raises(ValueError):
-        ProjectService(sqlite_initializer, profiles=[])
-
-
-def test_service_rejects_profiles_sharing_a_filename():
-    profiles = [ProfileSpec("A", "same.sqlite"), ProfileSpec("B", "SAME.sqlite")]
-
-    with pytest.raises(ValueError):
-        ProjectService(sqlite_initializer, profiles)
-
-
-TEMPLATE = {
-    "categories": [
-        {"name": "Basics", "fields": [{"name": "Age", "type": "text"},
-                                      {"name": "Notes", "type": "textarea"}]},
-    ]
-}
+        assert list(tmp_path.iterdir()) == []
 
 
-def read_layout(db_path):
-    connection = sqlite3.connect(str(db_path))
-    try:
-        categories = [r[0] for r in connection.execute("SELECT name FROM categories")]
-        fields = [r[0] for r in connection.execute("SELECT name FROM fields ORDER BY sort_order")]
-    finally:
-        connection.close()
-    return categories, fields
+class TestFindingAProject:
+    def test_a_project_folder_is_recognised(self, service, tmp_path):
+        created = service.create_project(tmp_path, "Saga")
+
+        assert service.locate_project(created.root) == created
+
+    def test_a_folder_without_a_project_database_is_refused(self, service, tmp_path):
+        (tmp_path / "Plain").mkdir()
+
+        with pytest.raises(InvalidProjectError, match="not a Worldbuilder project"):
+            service.locate_project(tmp_path / "Plain")
+
+    def test_a_path_that_is_not_a_folder_is_refused(self, service, tmp_path):
+        (tmp_path / "file.txt").write_text("x")
+
+        with pytest.raises(InvalidProjectError):
+            service.locate_project(tmp_path / "file.txt")
+
+    def test_a_missing_path_is_refused(self, service, tmp_path):
+        with pytest.raises(InvalidProjectError):
+            service.locate_project(tmp_path / "gone")
 
 
-def test_make_initializer_creates_a_seeded_profile_database(tmp_path):
-    initializer = make_initializer({"Characters": TEMPLATE})
+class TestRememberingTheLastProject:
+    def test_the_last_project_folder_can_be_recalled(self, service, tmp_path):
+        project = service.create_project(tmp_path, "Saga")
+        settings = tmp_path / LAST_PROJECT_FILE_NAME
 
-    project = ProjectService(initializer).create_project(tmp_path, "Saga")
+        assert remember_project(settings, project.root) is True
+        assert recall_project(settings) == project.root
 
-    assert read_layout(project.databases["Characters"]) == (["Basics"], ["Age", "Notes"])
+    def test_nothing_is_recalled_before_anything_was_remembered(self, tmp_path):
+        assert recall_project(tmp_path / LAST_PROJECT_FILE_NAME) is None
 
+    def test_an_empty_settings_file_recalls_nothing(self, tmp_path):
+        settings = tmp_path / LAST_PROJECT_FILE_NAME
+        settings.write_text("")
 
-def test_make_initializer_leaves_profiles_without_a_template_empty(tmp_path):
-    initializer = make_initializer({"Characters": TEMPLATE})
+        assert recall_project(settings) is None
 
-    project = ProjectService(initializer).create_project(tmp_path, "Saga")
+    def test_a_remembered_folder_that_no_longer_holds_a_project_is_ignored(self, service, tmp_path):
+        project = service.create_project(tmp_path, "Saga")
+        settings = tmp_path / LAST_PROJECT_FILE_NAME
+        remember_project(settings, project.root)
+        (project.root / PROJECT_DB_NAME).unlink()
 
-    assert read_layout(project.databases["Worldbuilding"]) == ([], [])
+        assert recall_project(settings) is None
 
-
-def test_make_initializer_releases_the_database_file(tmp_path):
-    initializer = make_initializer({})
-    path = tmp_path / "x.sqlite"
-
-    initializer(path, ProfileSpec("Characters", "x.sqlite"))
-    path.unlink()
-
-    assert not path.exists()
-
-
-def test_default_profiles_come_from_the_seed_templates():
-    assert [(p.label, p.filename) for p in DEFAULT_PROFILES] == [
-        ("Characters", "Characters.sqlite"),
-        ("Worldbuilding", "Worldbuilding.sqlite"),
-    ]
-
-
-def test_default_initializer_seeds_every_default_profile_from_its_template(tmp_path):
-    project = ProjectService(make_initializer()).create_project(tmp_path, "Saga")
-
-    categories, _fields = read_layout(project.databases["Characters"])
-    assert "Relations" in categories
-    categories, fields = read_layout(project.databases["Worldbuilding"])
-    assert "Geography" in categories and "Terrain" in fields
+    def test_remembering_into_an_unwritable_place_reports_failure(self, tmp_path):
+        assert remember_project(tmp_path / "missing" / "settings.txt", tmp_path) is False
